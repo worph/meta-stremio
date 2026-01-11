@@ -1,0 +1,737 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>meta-stremio</title>
+    <style>
+        :root {
+            --bg-primary: #0a0a0f;
+            --bg-secondary: #12121a;
+            --bg-tertiary: #1a1a2e;
+            --text-primary: #e0e0e0;
+            --text-secondary: #a0a0a0;
+            --accent-primary: #4ecdc4;
+            --accent-secondary: #ff6b6b;
+            --accent-warning: #ffd93d;
+            --border-color: #2a2a3e;
+            --success: #4ecdc4;
+            --error: #ff6b6b;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            background: var(--bg-primary);
+            color: var(--text-primary);
+            min-height: 100vh;
+            padding: 2rem;
+        }
+
+        .container { max-width: 1200px; margin: 0 auto; }
+
+        .header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 2rem;
+            padding-bottom: 1rem;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .header h1 {
+            font-size: 1.8rem;
+            font-weight: 600;
+            background: linear-gradient(135deg, var(--accent-primary), var(--accent-secondary));
+            -webkit-background-clip: text;
+            background-clip: text;
+            -webkit-text-fill-color: transparent;
+        }
+
+        .header-subtitle {
+            color: var(--text-secondary);
+            font-size: 0.9rem;
+            margin-top: 0.25rem;
+        }
+
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(350px, 1fr));
+            gap: 1.5rem;
+            margin-bottom: 2rem;
+        }
+
+        .card {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 1.5rem;
+            border: 1px solid var(--border-color);
+            transition: border-color 0.2s;
+        }
+
+        .card:hover {
+            border-color: rgba(78, 205, 196, 0.3);
+        }
+
+        .card h2 {
+            font-size: 1rem;
+            font-weight: 600;
+            color: var(--text-primary);
+            margin-bottom: 1rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .card h2 .icon { font-size: 1.2rem; }
+
+        /* Setup Card */
+        .setup-url {
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+            padding: 1rem;
+            font-family: monospace;
+            font-size: 0.85rem;
+            word-break: break-all;
+            margin-bottom: 1rem;
+            border: 1px solid var(--border-color);
+            color: var(--accent-primary);
+        }
+
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.75rem 1.5rem;
+            border-radius: 8px;
+            text-decoration: none;
+            font-weight: 600;
+            font-size: 0.9rem;
+            transition: all 0.2s;
+            border: none;
+            cursor: pointer;
+        }
+
+        .btn-primary {
+            background: var(--accent-primary);
+            color: var(--bg-primary);
+        }
+
+        .btn-primary:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(78, 205, 196, 0.3);
+        }
+
+        .btn-secondary {
+            background: var(--bg-tertiary);
+            color: var(--text-primary);
+            border: 1px solid var(--border-color);
+        }
+
+        .btn-secondary:hover {
+            background: var(--border-color);
+        }
+
+        .btn-group { display: flex; gap: 0.75rem; flex-wrap: wrap; }
+
+        /* Status Indicators */
+        .status {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.5rem;
+            padding: 0.25rem 0.75rem;
+            border-radius: 20px;
+            font-size: 0.85rem;
+            font-weight: 500;
+        }
+
+        .status-dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+
+        .status-connected {
+            background: rgba(78, 205, 196, 0.15);
+            color: var(--success);
+        }
+
+        .status-connected .status-dot {
+            background: var(--success);
+            box-shadow: 0 0 8px var(--success);
+        }
+
+        .status-disconnected {
+            background: rgba(255, 107, 107, 0.15);
+            color: var(--error);
+        }
+
+        .status-disconnected .status-dot { background: var(--error); }
+
+        .status-loading {
+            background: rgba(255, 217, 61, 0.15);
+            color: var(--accent-warning);
+        }
+
+        .status-loading .status-dot {
+            background: var(--accent-warning);
+            animation: pulse 1s infinite;
+        }
+
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        /* Stats */
+        .stats-grid {
+            display: grid;
+            grid-template-columns: repeat(3, 1fr);
+            gap: 1rem;
+        }
+
+        .stat {
+            text-align: center;
+            padding: 1rem;
+            background: var(--bg-tertiary);
+            border-radius: 8px;
+        }
+
+        .stat-value {
+            font-size: 2rem;
+            font-weight: 700;
+            color: var(--accent-primary);
+        }
+
+        .stat-label {
+            font-size: 0.75rem;
+            color: var(--text-secondary);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-top: 0.25rem;
+        }
+
+        /* Metrics */
+        .metric-row {
+            display: flex;
+            justify-content: space-between;
+            padding: 0.75rem 0;
+            border-bottom: 1px solid var(--border-color);
+        }
+
+        .metric-row:last-child { border-bottom: none; }
+        .metric-label { color: var(--text-secondary); }
+        .metric-value { font-weight: 600; color: var(--text-primary); }
+        .metric-value.good { color: var(--success); }
+        .metric-value.warning { color: var(--accent-warning); }
+        .metric-value.bad { color: var(--error); }
+
+        /* Progress bar */
+        .progress-bar {
+            height: 8px;
+            background: var(--bg-tertiary);
+            border-radius: 4px;
+            overflow: hidden;
+            margin-top: 0.5rem;
+        }
+
+        .progress-fill {
+            height: 100%;
+            border-radius: 4px;
+            transition: width 0.3s ease;
+        }
+
+        .progress-fill.good { background: linear-gradient(90deg, var(--success), #69e0d8); }
+        .progress-fill.warning { background: linear-gradient(90deg, var(--accent-warning), #ffe066); }
+        .progress-fill.bad { background: linear-gradient(90deg, var(--error), #ff8787); }
+
+        /* Steps */
+        .steps { list-style: none; }
+
+        .steps li {
+            padding: 0.75rem 0;
+            padding-left: 2rem;
+            position: relative;
+            border-left: 2px solid var(--border-color);
+        }
+
+        .steps li:before {
+            content: '';
+            position: absolute;
+            left: -6px;
+            top: 1rem;
+            width: 10px;
+            height: 10px;
+            border-radius: 50%;
+            background: var(--accent-primary);
+        }
+
+        .steps li:last-child { border-left-color: transparent; }
+
+        .steps code {
+            background: var(--bg-tertiary);
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-size: 0.85rem;
+        }
+
+        /* Storage info */
+        .storage-info {
+            display: flex;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+
+        .storage-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .storage-type {
+            font-size: 1.1rem;
+            font-weight: 600;
+            color: var(--accent-primary);
+        }
+
+        /* Footer */
+        footer {
+            text-align: center;
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            margin-top: 2rem;
+        }
+
+        footer a {
+            color: var(--accent-primary);
+            text-decoration: none;
+        }
+
+        footer a:hover { text-decoration: underline; }
+
+        /* Services Navigation */
+        .services-nav {
+            background: var(--bg-secondary);
+            border-radius: 12px;
+            padding: 0.5rem;
+            margin-bottom: 1.5rem;
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+            border: 1px solid var(--border-color);
+        }
+
+        .services-nav-label {
+            color: var(--text-secondary);
+            font-size: 0.85rem;
+            padding: 0.5rem 0.75rem;
+            white-space: nowrap;
+        }
+
+        .services-nav-items {
+            display: flex;
+            gap: 0.5rem;
+            flex-wrap: wrap;
+        }
+
+        .service-link {
+            display: inline-flex;
+            align-items: center;
+            gap: 0.4rem;
+            padding: 0.5rem 1rem;
+            border-radius: 8px;
+            text-decoration: none;
+            font-size: 0.9rem;
+            font-weight: 500;
+            transition: all 0.2s;
+            color: var(--text-primary);
+            background: var(--bg-tertiary);
+            border: 1px solid var(--border-color);
+        }
+
+        .service-link:hover {
+            background: var(--border-color);
+            border-color: rgba(78, 205, 196, 0.5);
+        }
+
+        .service-link.active {
+            background: linear-gradient(135deg, rgba(78, 205, 196, 0.2), rgba(68, 160, 141, 0.2));
+            border-color: rgba(78, 205, 196, 0.5);
+        }
+
+        .service-link .service-icon { font-size: 1.1rem; }
+
+        .service-link .service-status {
+            width: 6px;
+            height: 6px;
+            border-radius: 50%;
+            background: var(--success);
+            margin-left: 0.25rem;
+        }
+
+        /* Responsive */
+        @media (max-width: 600px) {
+            body { padding: 1rem; }
+            .header h1 { font-size: 1.5rem; }
+            .stats-grid { grid-template-columns: 1fr; }
+            .btn-group { flex-direction: column; }
+            .btn { justify-content: center; }
+            .services-nav { flex-direction: column; align-items: flex-start; }
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <!-- Services Navigation -->
+        <nav class="services-nav" id="servicesNav" style="display: none;">
+            <span class="services-nav-label">Services:</span>
+            <div class="services-nav-items" id="servicesNavItems">
+                <!-- Populated by JavaScript -->
+            </div>
+        </nav>
+
+        <header class="header">
+            <div>
+                <h1>meta-stremio</h1>
+                <p class="header-subtitle">Stream your media library with on-the-fly HLS transcoding</p>
+            </div>
+        </header>
+
+        <div class="grid">
+            <!-- Setup Card -->
+            <div class="card">
+                <h2><span class="icon">🎬</span> Quick Setup</h2>
+                <p style="margin-bottom: 1rem; color: var(--text-secondary);">Install URL for Stremio:</p>
+                <div class="setup-url" id="manifestUrl"></div>
+                <div class="btn-group">
+                    <a href="#" id="installLink" class="btn btn-primary">
+                        📥 Install in Stremio
+                    </a>
+                    <button onclick="copyUrl()" class="btn btn-secondary">
+                        📋 Copy URL
+                    </button>
+                    <a href="/configure" class="btn btn-secondary">
+                        🌐 Configure Language
+                    </a>
+                </div>
+            </div>
+
+            <!-- Storage Status -->
+            <div class="card">
+                <h2><span class="icon">💾</span> Storage Status</h2>
+                <div class="storage-info">
+                    <div class="storage-row">
+                        <span class="storage-type" id="storageType">Loading...</span>
+                        <span class="status status-loading" id="storageStatus">
+                            <span class="status-dot"></span>
+                            <span id="storageStatusText">Checking...</span>
+                        </span>
+                    </div>
+                    <div class="storage-row" id="redisUrlRow" style="display: none;">
+                        <span class="metric-label">Leader</span>
+                        <span class="metric-value" id="redisUrl"></span>
+                    </div>
+                    <div class="storage-row">
+                        <span class="metric-label">Prefix</span>
+                        <span class="metric-value" id="storagePrefix">meta-sort:</span>
+                    </div>
+                    <div style="margin-top: 0.5rem;">
+                        <button onclick="refreshLibrary()" class="btn btn-secondary" style="width: 100%;">
+                            🔄 Refresh Library
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Library Stats -->
+            <div class="card">
+                <h2><span class="icon">📚</span> Library</h2>
+                <div class="stats-grid">
+                    <div class="stat">
+                        <div class="stat-value" id="totalVideos">-</div>
+                        <div class="stat-label">Total</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-value" id="movieCount">-</div>
+                        <div class="stat-label">Movies</div>
+                    </div>
+                    <div class="stat">
+                        <div class="stat-value" id="seriesCount">-</div>
+                        <div class="stat-label">Series</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Transcoding Metrics -->
+            <div class="card">
+                <h2><span class="icon">⚡</span> Transcoding</h2>
+                <div class="metric-row">
+                    <span class="metric-label">Transcode Ratio</span>
+                    <span class="metric-value" id="transcodeRatio">-</span>
+                </div>
+                <div class="progress-bar">
+                    <div class="progress-fill good" id="ratioBar" style="width: 0%"></div>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Active Streams</span>
+                    <span class="metric-value" id="activeStreams">0</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Avg Segment Time</span>
+                    <span class="metric-value" id="avgSegmentTime">-</span>
+                </div>
+                <div class="metric-row">
+                    <span class="metric-label">Cache Hits</span>
+                    <span class="metric-value good" id="cacheHits">-</span>
+                </div>
+            </div>
+
+            <!-- Setup Instructions -->
+            <div class="card" style="grid-column: 1 / -1;">
+                <h2><span class="icon">📖</span> Setup Instructions</h2>
+                <ol class="steps">
+                    <li>
+                        <strong>Install Stremio</strong><br>
+                        <span style="color: var(--text-secondary);">Download from</span> <a href="https://www.stremio.com" target="_blank">stremio.com</a>
+                    </li>
+                    <li>
+                        <strong>Add this addon</strong><br>
+                        <span style="color: var(--text-secondary);">Click "Install in Stremio" above, or paste the URL into Stremio's addon search</span>
+                    </li>
+                    <li>
+                        <strong>Browse your library</strong><br>
+                        <span style="color: var(--text-secondary);">Your videos indexed by meta-sort will appear in the addon's catalog</span>
+                    </li>
+                    <li>
+                        <strong>Start streaming</strong><br>
+                        <span style="color: var(--text-secondary);">Select a video and choose your preferred stream quality</span>
+                    </li>
+                </ol>
+            </div>
+        </div>
+
+        <footer>
+            <p>Part of the <a href="https://github.com/user/metamesh">MetaMesh</a> ecosystem</p>
+            <p style="margin-top: 0.5rem;">Powered by meta-sort metadata | FFmpeg HLS transcoding</p>
+        </footer>
+    </div>
+
+    <script>
+        const baseUrl = window.location.origin;
+        const manifestUrl = `${baseUrl}/manifest.json`;
+
+        // Set URLs
+        document.getElementById('manifestUrl').textContent = manifestUrl;
+        document.getElementById('installLink').href = `stremio://${window.location.host}/manifest.json`;
+
+        function copyUrl() {
+            navigator.clipboard.writeText(manifestUrl).then(() => {
+                const btn = event.target.closest('.btn');
+                const original = btn.innerHTML;
+                btn.innerHTML = '✓ Copied!';
+                setTimeout(() => btn.innerHTML = original, 2000);
+            });
+        }
+
+        async function fetchStorageStatus() {
+            try {
+                const res = await fetch('/api/storage-status');
+                const data = await res.json();
+
+                const statusEl = document.getElementById('storageStatus');
+                const statusText = document.getElementById('storageStatusText');
+                const typeEl = document.getElementById('storageType');
+
+                // Display storage type
+                const typeNames = {
+                    'leader': 'Leader Discovery',
+                    'redis': 'Redis Direct'
+                };
+                typeEl.textContent = typeNames[data.type] || data.type;
+
+                if (data.connected) {
+                    statusEl.className = 'status status-connected';
+                    statusText.textContent = 'Connected';
+                } else {
+                    statusEl.className = 'status status-disconnected';
+                    statusText.textContent = 'Disconnected';
+                }
+
+                // Show leader info for leader mode
+                const redisUrlRow = document.getElementById('redisUrlRow');
+                if (data.leader && data.leader.api) {
+                    redisUrlRow.style.display = 'flex';
+                    document.getElementById('redisUrl').textContent = data.leader.host + ' (' + data.leader.api.replace('redis://', '') + ')';
+                } else if (data.type === 'redis' && data.url) {
+                    redisUrlRow.style.display = 'flex';
+                    document.getElementById('redisUrl').textContent = data.url.replace(/\/\/[^:]+:[^@]+@/, '//***:***@');
+                } else {
+                    redisUrlRow.style.display = 'none';
+                }
+
+                if (data.prefix) {
+                    document.getElementById('storagePrefix').textContent = data.prefix;
+                }
+            } catch (e) {
+                console.error('Failed to fetch storage status:', e);
+            }
+        }
+
+        async function fetchStats() {
+            try {
+                const res = await fetch('/api/stats');
+                const data = await res.json();
+
+                document.getElementById('totalVideos').textContent = data.total || 0;
+                document.getElementById('movieCount').textContent = data.movies || 0;
+                document.getElementById('seriesCount').textContent = data.series || 0;
+            } catch (e) {
+                console.error('Failed to fetch stats:', e);
+            }
+        }
+
+        async function fetchMetrics() {
+            try {
+                const res = await fetch('/transcode/metrics');
+                const data = await res.json();
+
+                // Transcode ratio
+                const ratio = data.transcode_ratio || 0;
+                const ratioPercent = Math.round(ratio * 100);
+                document.getElementById('transcodeRatio').textContent = `${ratioPercent}%`;
+
+                const ratioBar = document.getElementById('ratioBar');
+                ratioBar.style.width = `${ratioPercent}%`;
+
+                // Color based on target (60-80% is ideal)
+                if (ratio >= 0.6 && ratio <= 0.8) {
+                    ratioBar.className = 'progress-fill good';
+                } else if (ratio >= 0.5 && ratio <= 0.9) {
+                    ratioBar.className = 'progress-fill warning';
+                } else {
+                    ratioBar.className = 'progress-fill bad';
+                }
+
+                // Active streams
+                document.getElementById('activeStreams').textContent = data.active_transcodes || 0;
+
+                // Avg segment time
+                const avgTime = data.avg_segment_time;
+                if (avgTime !== undefined && avgTime !== null) {
+                    document.getElementById('avgSegmentTime').textContent = `${avgTime.toFixed(2)}s`;
+                }
+
+                // Cache hits
+                const total = (data.cache_hits || 0) + (data.cache_misses || 0);
+                if (total > 0) {
+                    const hitRate = Math.round((data.cache_hits / total) * 100);
+                    document.getElementById('cacheHits').textContent = `${hitRate}% (${data.cache_hits}/${total})`;
+                }
+            } catch (e) {
+                console.error('Failed to fetch metrics:', e);
+            }
+        }
+
+        async function refreshLibrary() {
+            try {
+                const btn = event.target.closest('.btn');
+                btn.disabled = true;
+                btn.innerHTML = '⏳ Refreshing...';
+
+                await fetch('/api/library/refresh', { method: 'POST' });
+
+                await fetchStats();
+                await fetchStorageStatus();
+
+                btn.innerHTML = '✓ Refreshed!';
+                setTimeout(() => {
+                    btn.disabled = false;
+                    btn.innerHTML = '🔄 Refresh Library';
+                }, 2000);
+            } catch (e) {
+                console.error('Failed to refresh library:', e);
+                const btn = event.target.closest('.btn');
+                btn.disabled = false;
+                btn.innerHTML = '❌ Failed';
+                setTimeout(() => {
+                    btn.innerHTML = '🔄 Refresh Library';
+                }, 2000);
+            }
+        }
+
+        // Service icons mapping
+        const serviceIcons = {
+            'meta-sort': '📁',
+            'meta-fuse': '🗂️',
+            'meta-stremio': '🎬',
+            'meta-orbit': '🌐',
+            'default': '📦'
+        };
+
+        // Fetch and display discovered services
+        async function fetchServices() {
+            try {
+                const res = await fetch('/api/services');
+                const data = await res.json();
+
+                const navEl = document.getElementById('servicesNav');
+                const itemsEl = document.getElementById('servicesNavItems');
+
+                if (data.services && data.services.length > 0) {
+                    // Sort services by name
+                    const services = data.services.sort((a, b) => a.name.localeCompare(b.name));
+
+                    // Build navigation items
+                    itemsEl.innerHTML = services.map(svc => {
+                        const icon = serviceIcons[svc.name] || serviceIcons.default;
+                        const isActive = svc.name === data.current;
+                        const activeClass = isActive ? ' active' : '';
+
+                        // Use external URL for other services, current path for self
+                        const href = isActive ? '#' : svc.url;
+
+                        return `
+                            <a href="${href}" class="service-link${activeClass}" onclick="event.preventDefault(); ${isActive ? '' : `window.location.href='${svc.url}'`}">
+                                <span class="service-icon">${icon}</span>
+                                <span>${formatServiceName(svc.name)}</span>
+                                <span class="service-status"></span>
+                            </a>
+                        `;
+                    }).join('');
+
+                    navEl.style.display = 'flex';
+                } else {
+                    navEl.style.display = 'none';
+                }
+            } catch (e) {
+                console.error('Failed to fetch services:', e);
+                document.getElementById('servicesNav').style.display = 'none';
+            }
+        }
+
+        function formatServiceName(name) {
+            // Convert 'meta-stremio' to 'Meta Stremio'
+            return name.split('-').map(word =>
+                word.charAt(0).toUpperCase() + word.slice(1)
+            ).join(' ');
+        }
+
+        // Initial fetch
+        fetchStorageStatus();
+        fetchStats();
+        fetchMetrics();
+        fetchServices();
+
+        // Refresh metrics every 5 seconds
+        setInterval(fetchMetrics, 5000);
+
+        // Refresh stats every 30 seconds
+        setInterval(fetchStats, 30000);
+
+        // Refresh services every 60 seconds
+        setInterval(fetchServices, 60000);
+    </script>
+</body>
+</html>

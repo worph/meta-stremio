@@ -1,0 +1,54 @@
+# Meta-Stremio Docker Compose
+# For local development and testing
+
+version: '3.8'
+
+services:
+  meta-stremio:
+    build: .
+    container_name: meta-stremio
+    ports:
+      - "7000:7000"
+    volumes:
+      # Mount your media directory
+      - ${MEDIA_DIR:-./media}:/data/media:ro
+      # Cache for transcoded segments
+      - meta-stremio-cache:/data/cache
+    environment:
+      - PORT=7000
+      - MEDIA_DIR=/data/media
+      - CACHE_DIR=/data/cache
+      - STORAGE_MODE=${STORAGE_MODE:-leader}
+      - REDIS_URL=${REDIS_URL:-redis://redis:6379}
+      - REDIS_PREFIX=${REDIS_PREFIX:-meta-sort:}
+      - SEGMENT_DURATION=${SEGMENT_DURATION:-4}
+      - PREFETCH_SEGMENTS=${PREFETCH_SEGMENTS:-4}
+      - SCHEME=${SCHEME:-auto}
+    restart: unless-stopped
+    depends_on:
+      redis:
+        condition: service_healthy
+        required: false
+
+  # Optional Redis for production use
+  # Comment out if connecting to external Redis
+  redis:
+    image: redis:7-alpine
+    container_name: meta-stremio-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - meta-stremio-redis:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+    profiles:
+      - with-redis
+
+volumes:
+  meta-stremio-cache:
+  meta-stremio-redis:

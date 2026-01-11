@@ -1,0 +1,10 @@
+# Meta-Stremio dependencies
+
+# Redis client for KV storage
+redis>=5.0.0
+
+# File watching for leader discovery (optional but recommended)
+watchdog>=4.0.0
+
+# Image processing for poster resizing
+Pillow>=10.0.0

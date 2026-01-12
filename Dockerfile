@@ -19,10 +19,11 @@ LABEL org.opencontainers.image.source=https://github.com/worph/meta-stremio
 LABEL org.opencontainers.image.description="MetaMesh Stremio addon with HLS transcoding"
 LABEL org.opencontainers.image.licenses=MIT
 
-# Install FFmpeg, curl (for healthcheck), and other dependencies
+# Install FFmpeg, curl (for healthcheck), Redis, and other dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
     ffmpeg \
     curl \
+    redis-server \
     && rm -rf /var/lib/apt/lists/*
 
 # Set working directory

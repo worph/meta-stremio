@@ -25,7 +25,7 @@ from typing import Optional
 import webdav_client
 
 # Configuration
-MEDIA_DIR = os.environ.get('MEDIA_DIR', '/data/media')
+MEDIA_DIR = os.environ.get('MEDIA_DIR', '/files/watch')
 CACHE_DIR = os.environ.get('CACHE_DIR', '/data/cache')
 SEGMENT_DURATION = int(os.environ.get('SEGMENT_DURATION', '4'))
 PREFETCH_SEGMENTS = int(os.environ.get('PREFETCH_SEGMENTS', '4'))

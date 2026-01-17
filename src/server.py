@@ -10,15 +10,14 @@ A standalone Stremio addon that:
 5. Registers with service discovery for inter-service navigation
 
 Environment Variables:
-- MEDIA_DIR: Directory containing video files (default: /data/media)
+- MEDIA_DIR: Directory containing video files (default: /files/watch)
 - CACHE_DIR: Directory for transcoded segments (default: /data/cache)
 - PORT: HTTP server port (default: 7000)
-- STORAGE_MODE: Storage backend 'leader' or 'redis' (default: leader)
+- STORAGE_MODE: Storage backend 'leader' or 'redis' (default: redis)
 - META_CORE_PATH: Path to meta-core shared volume (default: /meta-core)
-- FILES_PATH: Path to files shared volume (default: /files)
 - REDIS_URL: Redis connection URL (default: redis://localhost:6379)
-- REDIS_PREFIX: Redis key prefix (default: meta-sort:)
-- SCHEME: URL scheme for generated URLs (http/https/auto)
+- REDIS_PREFIX: Redis key prefix (default: empty)
+- SCHEME: URL scheme for generated URLs - http/https/auto (default: auto)
 - SEGMENT_DURATION: HLS segment length in seconds (default: 4)
 - PREFETCH_SEGMENTS: How many segments to prefetch ahead (default: 4)
 """
@@ -43,7 +42,7 @@ import webdav_client
 
 # Configuration
 PORT = int(os.environ.get('PORT', '7000'))
-SCHEME = os.environ.get('SCHEME', '').lower().strip()
+SCHEME = os.environ.get('SCHEME', 'auto').lower().strip()
 META_CORE_PATH = os.environ.get('META_CORE_PATH', '/meta-core')
 BASE_URL = os.environ.get('BASE_URL', '')
 

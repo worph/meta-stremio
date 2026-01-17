@@ -22,7 +22,7 @@ from .provider import StorageProvider, VideoMetadata
 
 # Redis configuration
 REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379')
-REDIS_PREFIX = os.environ.get('REDIS_PREFIX', 'meta-sort:')
+REDIS_PREFIX = os.environ.get('REDIS_PREFIX', '')
 
 
 class RedisStorage(StorageProvider):

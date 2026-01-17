@@ -25,8 +25,8 @@ from collections import defaultdict
 from storage import StorageProvider, VideoMetadata, RedisStorage, LeaderStorage
 
 # Configuration
-MEDIA_DIR = os.environ.get('MEDIA_DIR', '/data/media')
-STORAGE_MODE = os.environ.get('STORAGE_MODE', 'leader').lower()  # 'leader' or 'redis'
+MEDIA_DIR = os.environ.get('MEDIA_DIR', '/files/watch')
+STORAGE_MODE = os.environ.get('STORAGE_MODE', 'redis').lower()  # 'leader' or 'redis'
 
 # Poster dimensions for Stremio
 POSTER_WIDTH = 342  # Stremio standard poster width

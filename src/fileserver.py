@@ -15,6 +15,8 @@ import os
 import io
 from typing import Optional, Tuple
 
+import webdav_client
+
 # Optional PIL for image resizing
 try:
     from PIL import Image
@@ -113,7 +115,8 @@ def serve_file(cid: str, width: Optional[int] = None) -> Tuple[Optional[bytes], 
     if not file_path:
         return None, 'text/plain', 404
 
-    if not os.path.exists(file_path):
+    # Check if file exists (works with both local and WebDAV)
+    if not webdav_client.file_exists(file_path):
         print(f"[FileServer] File not found: {file_path}")
         return None, 'text/plain', 404
 
@@ -133,8 +136,11 @@ def serve_file(cid: str, width: Optional[int] = None) -> Tuple[Optional[bytes], 
     content_type = content_types.get(ext, 'application/octet-stream')
 
     try:
-        with open(file_path, 'rb') as f:
-            file_data = f.read()
+        # Read file (works with both local and WebDAV)
+        file_data = webdav_client.read_file(file_path)
+        if file_data is None:
+            print(f"[FileServer] Failed to read file: {file_path}")
+            return None, 'text/plain', 500
 
         # Resize if width is specified and it's an image
         if width and PIL_AVAILABLE and content_type.startswith('image/'):

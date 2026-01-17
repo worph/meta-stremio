@@ -6,9 +6,10 @@ A standalone Stremio addon service for streaming personal media with on-the-fly 
 
 Meta-Stremio is a **process-read** service that:
 - Reads file metadata from the shared KV store (Redis)
-- Reads media files from the shared DATA volume
+- Reads media files via WebDAV (from meta-sort) or direct volume access
 - Provides HLS streaming with adaptive real-time FFmpeg transcoding
 - Serves as a Stremio addon for seamless playback
+- Supports SMB/rclone mounts via meta-sort's WebDAV endpoint
 
 ```
 ┌─────────────────────────────────────────────────────────────────────┐
@@ -65,11 +66,13 @@ meta-stremio/
 ├── CLAUDE.md                   # Development guide
 ├── Dockerfile
 ├── docker-compose.yml
-├── requirements.txt            # Just redis
+├── requirements.txt            # redis + requests
 ├── src/
 │   ├── server.py               # HTTP server + routing
 │   ├── stremio.py              # Stremio handlers + storage integration
 │   ├── transcoder.py           # HLS transcoding engine
+│   ├── fileserver.py           # File serving (direct or WebDAV)
+│   ├── webdav_client.py        # WebDAV client for meta-sort file access
 │   └── storage/
 │       ├── __init__.py
 │       ├── provider.py         # Abstract StorageProvider
@@ -142,6 +145,9 @@ python server.py
 | `SEGMENT_DURATION` | `4` | HLS segment length (seconds) |
 | `PREFETCH_SEGMENTS` | `4` | Segments to prefetch ahead |
 | `SCHEME` | `auto` | URL scheme (`http`, `https`, `auto`) |
+| `META_SORT_WEBDAV_URL` | - | WebDAV URL for file access (e.g., `http://meta-sort/webdav`) |
+
+**WebDAV File Access**: When `META_SORT_WEBDAV_URL` is set, meta-stremio reads files via HTTP from meta-sort's WebDAV server instead of direct filesystem access. This enables access to SMB/rclone mounts that are dynamically mounted inside meta-sort.
 
 ## API Endpoints
 

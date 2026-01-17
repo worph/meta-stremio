@@ -39,6 +39,7 @@ import transcoder
 from storage import init_service_discovery, get_service_discovery
 import fileserver
 import plugin_subscriber
+import webdav_client
 
 # Configuration
 PORT = int(os.environ.get('PORT', '7000'))
@@ -721,7 +722,8 @@ class Handler(BaseHTTPRequestHandler):
 
         full_path = None
         for candidate in candidates:
-            if os.path.exists(candidate):
+            # Check if file exists (works with both local and WebDAV)
+            if webdav_client.file_exists(candidate):
                 full_path = candidate
                 break
 
@@ -758,9 +760,9 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         video_codec, audio_codec = transcoder.extract_codecs(info)
-        transcoder.segment_manager.set_codec_info(video_codec, audio_codec, filepath)
+        transcoder.segment_manager.set_codec_info(video_codec, audio_codec, full_path)
 
-        data = transcoder.get_or_transcode_segment(filepath, file_hash, audio, resolution, segment, info)
+        data = transcoder.get_or_transcode_segment(full_path, file_hash, audio, resolution, segment, info)
         if data:
             self.send_data(data, 'video/mp2t')
         else:
@@ -797,7 +799,8 @@ class Handler(BaseHTTPRequestHandler):
 
         full_path = None
         for candidate in candidates:
-            if os.path.exists(candidate):
+            # Check if file exists (works with both local and WebDAV)
+            if webdav_client.file_exists(candidate):
                 full_path = candidate
                 break
 
@@ -818,7 +821,12 @@ class Handler(BaseHTTPRequestHandler):
         }
         content_type = content_types.get(ext, 'application/octet-stream')
 
-        file_size = os.path.getsize(full_path)
+        # Get file size (works with both local and WebDAV)
+        file_size = webdav_client.get_file_size(full_path)
+        if file_size is None:
+            self.send_error(500, f"Could not get file size: {filepath}")
+            return
+
         range_header = self.headers.get('Range')
 
         if range_header:
@@ -837,16 +845,9 @@ class Handler(BaseHTTPRequestHandler):
                 self.send_header('Access-Control-Allow-Origin', '*')
                 self.end_headers()
 
-                with open(full_path, 'rb') as f:
-                    f.seek(start)
-                    remaining = length
-                    chunk_size = 64 * 1024
-                    while remaining > 0:
-                        chunk = f.read(min(chunk_size, remaining))
-                        if not chunk:
-                            break
-                        self.wfile.write(chunk)
-                        remaining -= len(chunk)
+                # Stream the range (works with both local and WebDAV)
+                for chunk in webdav_client.stream_range(full_path, start, end, file_size):
+                    self.wfile.write(chunk)
                 return
 
         self.send_response(200)
@@ -856,13 +857,9 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Origin', '*')
         self.end_headers()
 
-        with open(full_path, 'rb') as f:
-            chunk_size = 64 * 1024
-            while True:
-                chunk = f.read(chunk_size)
-                if not chunk:
-                    break
-                self.wfile.write(chunk)
+        # Stream the entire file (works with both local and WebDAV)
+        for chunk in webdav_client.stream_file(full_path):
+            self.wfile.write(chunk)
 
     def get_base_url(self) -> str:
         host = self.headers.get('X-Forwarded-Host') or self.headers.get('Host', 'localhost')

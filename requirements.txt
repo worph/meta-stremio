@@ -8,3 +8,6 @@ watchdog>=4.0.0
 
 # Image processing for poster resizing
 Pillow>=10.0.0
+
+# HTTP client for WebDAV access
+requests>=2.31.0

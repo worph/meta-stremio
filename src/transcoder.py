@@ -22,6 +22,8 @@ import json
 import re
 from typing import Optional
 
+import webdav_client
+
 # Configuration
 MEDIA_DIR = os.environ.get('MEDIA_DIR', '/data/media')
 CACHE_DIR = os.environ.get('CACHE_DIR', '/data/cache')
@@ -456,6 +458,10 @@ class SubtitleManager:
             print(f"[Subtitle {sub_index}] Extracting from {os.path.basename(filepath)}...")
             is_mkv = filepath.lower().endswith(('.mkv', '.mka', '.mks'))
 
+            # Use WebDAV URL if available (ffmpeg can read HTTP URLs)
+            ffmpeg_input = webdav_client.to_webdav_url(filepath) or filepath
+            use_webdav = webdav_client.WEBDAV_ENABLED and ffmpeg_input.startswith('http')
+
             # Determine intermediate format based on codec
             codec_ext_map = {
                 'subrip': 'srt', 'srt': 'srt',
@@ -467,8 +473,8 @@ class SubtitleManager:
 
             extracted = False
 
-            # Method 1: Try mkvextract for MKV files (fastest)
-            if is_mkv and track_index is not None:
+            # Method 1: Try mkvextract for MKV files (fastest, but requires local file)
+            if is_mkv and track_index is not None and not use_webdav:
                 try:
                     result = subprocess.run(
                         ['mkvextract', 'tracks', filepath, f'{track_index}:{intermediate_file}'],
@@ -483,12 +489,12 @@ class SubtitleManager:
                 except Exception as e:
                     print(f"[Subtitle {sub_index}] mkvextract failed: {e}, trying ffmpeg")
 
-            # Method 2: FFmpeg copy codec (fast demux, no re-encoding)
+            # Method 2: FFmpeg copy codec (fast demux, no re-encoding, works with WebDAV)
             if not extracted:
                 result = subprocess.run(
                     ['ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
                      '-probesize', '1M', '-analyzeduration', '1M',
-                     '-i', filepath,
+                     '-i', ffmpeg_input,
                      '-map', f'0:s:{sub_index}',
                      '-c:s', 'copy', intermediate_file],
                     capture_output=True,
@@ -496,7 +502,8 @@ class SubtitleManager:
                 )
                 if result.returncode == 0 and os.path.exists(intermediate_file):
                     extracted = True
-                    print(f"[Subtitle {sub_index}] Extracted via ffmpeg copy")
+                    mode = "WebDAV" if use_webdav else "ffmpeg copy"
+                    print(f"[Subtitle {sub_index}] Extracted via {mode}")
 
             # Convert to WebVTT if needed
             if extracted and os.path.exists(intermediate_file):
@@ -567,9 +574,13 @@ def get_file_hash(filepath: str) -> str:
 def get_video_info(filepath: str) -> dict | None:
     """Get video metadata using ffprobe."""
     full_path = os.path.join(MEDIA_DIR, filepath) if not filepath.startswith('/') else filepath
+
+    # Use WebDAV URL if available (ffprobe can read HTTP URLs)
+    ffprobe_input = webdav_client.to_webdav_url(full_path) or full_path
+
     try:
         result = subprocess.run(
-            ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', full_path],
+            ['ffprobe', '-v', 'quiet', '-print_format', 'json', '-show_format', '-show_streams', ffprobe_input],
             capture_output=True, text=True, timeout=30
         )
         return json.loads(result.stdout) if result.returncode == 0 else None
@@ -618,6 +629,10 @@ def transcode_segment(filepath: str, file_hash: str, audio: int, resolution: str
         return output
 
     full_path = os.path.join(MEDIA_DIR, filepath) if not filepath.startswith('/') else filepath
+
+    # Use WebDAV URL if available (ffmpeg can read HTTP URLs)
+    ffmpeg_input = webdav_client.to_webdav_url(full_path) or full_path
+
     start_offset = segment * SEGMENT_DURATION
     res_preset = RESOLUTIONS.get(resolution, RESOLUTIONS['original'])
     width, height, base_crf = res_preset
@@ -632,7 +647,7 @@ def transcode_segment(filepath: str, file_hash: str, audio: int, resolution: str
         'ffmpeg', '-y', '-hide_banner', '-loglevel', 'error',
         '-threads', str(cpu_count),
         '-ss', str(start_offset),
-        '-i', full_path,
+        '-i', ffmpeg_input,
         '-t', str(SEGMENT_DURATION),
         '-map', '0:v:0',
         '-map', f'0:a:{audio}?',  # ? = optional, don't fail if audio track doesn't exist

@@ -30,10 +30,13 @@ except ImportError:
 REDIS_URL = os.environ.get('REDIS_URL', 'redis://localhost:6379')
 
 # Plugins that Stremio cares about
-WATCHED_PLUGINS: Set[str] = {'filename-parser', 'tmdb'}
+WATCHED_PLUGINS: Set[str] = {'filename-parser', 'tmdb', 'jellyfin-nfo'}
 
 # Channel for plugin completion events
 PLUGIN_COMPLETE_CHANNEL = 'meta-sort:plugin:complete'
+
+# Channel for scan reset events
+RESET_CHANNEL = 'meta-sort:scan:reset'
 
 
 class PluginSubscriber:
@@ -49,16 +52,19 @@ class PluginSubscriber:
         self,
         url: str = None,
         watched_plugins: Set[str] = None,
-        on_plugin_complete: Callable[[str, str, str], None] = None
+        on_plugin_complete: Callable[[str, str, str], None] = None,
+        on_scan_reset: Callable[[], None] = None
     ):
         """
         Initialize the plugin subscriber.
 
         Args:
             url: Redis connection URL
-            watched_plugins: Set of plugin IDs to watch (default: filename-parser, tmdb)
+            watched_plugins: Set of plugin IDs to watch (default: filename-parser, tmdb, jellyfin-nfo)
             on_plugin_complete: Callback when a watched plugin completes
                                 Signature: (file_hash, plugin_id, file_path) -> None
+            on_scan_reset: Callback when a scan reset event is received
+                           Signature: () -> None
         """
         if not REDIS_AVAILABLE:
             raise ImportError("redis package not installed. Run: pip install redis")
@@ -66,6 +72,7 @@ class PluginSubscriber:
         self._url = url or REDIS_URL
         self._watched_plugins = watched_plugins or WATCHED_PLUGINS
         self._on_plugin_complete = on_plugin_complete
+        self._on_scan_reset = on_scan_reset
         self._pubsub: Optional[redis.client.PubSub] = None
         self._thread: Optional[threading.Thread] = None
         self._running = False
@@ -84,7 +91,7 @@ class PluginSubscriber:
             self._client.ping()  # Test connection
 
             self._pubsub = self._client.pubsub()
-            self._pubsub.subscribe(PLUGIN_COMPLETE_CHANNEL)
+            self._pubsub.subscribe(PLUGIN_COMPLETE_CHANNEL, RESET_CHANNEL)
 
             self._running = True
             self._thread = threading.Thread(
@@ -95,6 +102,7 @@ class PluginSubscriber:
             self._thread.start()
 
             print(f"[PluginSubscriber] Started, watching plugins: {', '.join(self._watched_plugins)}")
+            print(f"[PluginSubscriber] Subscribed to: {PLUGIN_COMPLETE_CHANNEL}, {RESET_CHANNEL}")
             return True
 
         except Exception as e:
@@ -124,12 +132,16 @@ class PluginSubscriber:
         print("[PluginSubscriber] Stopped")
 
     def _listen_loop(self) -> None:
-        """Background loop that listens for plugin completion events."""
+        """Background loop that listens for plugin completion and reset events."""
         while self._running and self._pubsub:
             try:
                 message = self._pubsub.get_message(timeout=1.0)
                 if message and message['type'] == 'message':
-                    self._handle_message(message['data'])
+                    channel = message.get('channel', '')
+                    if channel == RESET_CHANNEL:
+                        self._handle_reset_message(message['data'])
+                    else:
+                        self._handle_message(message['data'])
             except redis.ConnectionError:
                 print("[PluginSubscriber] Connection lost, attempting reconnect...")
                 self._reconnect()
@@ -157,7 +169,7 @@ class PluginSubscriber:
                 self._client.ping()
 
                 self._pubsub = self._client.pubsub()
-                self._pubsub.subscribe(PLUGIN_COMPLETE_CHANNEL)
+                self._pubsub.subscribe(PLUGIN_COMPLETE_CHANNEL, RESET_CHANNEL)
 
                 print("[PluginSubscriber] Reconnected successfully")
                 return
@@ -167,6 +179,31 @@ class PluginSubscriber:
 
         print("[PluginSubscriber] Failed to reconnect after 5 attempts")
         self._running = False
+
+    def _handle_reset_message(self, data: str) -> None:
+        """Handle a scan reset message."""
+        try:
+            payload = json.loads(data)
+            action = payload.get('action', '')
+
+            print(f"[PluginSubscriber] Received scan reset event: {action}")
+
+            # Clear plugin completion tracking - fresh scan starting
+            files_cleared = len(self._file_plugin_status)
+            self._file_plugin_status.clear()
+            print(f"[PluginSubscriber] Cleared plugin status tracking for {files_cleared} files")
+
+            # Call the callback if provided
+            if self._on_scan_reset:
+                try:
+                    self._on_scan_reset()
+                except Exception as e:
+                    print(f"[PluginSubscriber] Reset callback error: {e}")
+
+        except json.JSONDecodeError:
+            print(f"[PluginSubscriber] Invalid JSON in reset message: {data[:100]}")
+        except Exception as e:
+            print(f"[PluginSubscriber] Error handling reset message: {e}")
 
     def _handle_message(self, data: str) -> None:
         """Handle a plugin completion message."""
@@ -224,13 +261,15 @@ _subscriber: Optional[PluginSubscriber] = None
 
 
 def init_subscriber(
-    on_plugin_complete: Callable[[str, str, str], None] = None
+    on_plugin_complete: Callable[[str, str, str], None] = None,
+    on_scan_reset: Callable[[], None] = None
 ) -> Optional[PluginSubscriber]:
     """
     Initialize and start the global plugin subscriber.
 
     Args:
         on_plugin_complete: Optional callback when watched plugins complete
+        on_scan_reset: Optional callback when a scan reset event is received
 
     Returns:
         The subscriber instance, or None if Redis is unavailable
@@ -244,7 +283,10 @@ def init_subscriber(
     if _subscriber and _subscriber.is_running():
         return _subscriber
 
-    _subscriber = PluginSubscriber(on_plugin_complete=on_plugin_complete)
+    _subscriber = PluginSubscriber(
+        on_plugin_complete=on_plugin_complete,
+        on_scan_reset=on_scan_reset
+    )
     if _subscriber.start():
         return _subscriber
 

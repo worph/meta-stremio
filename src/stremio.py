@@ -354,8 +354,19 @@ def get_series_title(video: VideoMetadata) -> str:
     Extract the base series title from a video.
 
     Removes episode/season specific parts from the title to get the series name.
+    Falls back to filename-based extraction if title is empty.
     """
     title = video.title
+
+    # If title is empty, try to extract from filename
+    if not title:
+        filename = os.path.basename(video.file_path)
+        # Remove extension
+        title = os.path.splitext(filename)[0]
+        # Clean up common patterns
+        title = re.sub(r'\[.*?\]', '', title)  # Remove [brackets]
+        title = re.sub(r'\(.*?\)', '', title)  # Remove (parentheses)
+        title = re.sub(r'[._]', ' ', title)    # Replace dots/underscores with spaces
 
     # Remove common episode patterns from title
     # e.g., "Show Name S01E01", "Show Name - Episode 1", "Show Name 1x01"
@@ -372,7 +383,21 @@ def get_series_title(video: VideoMetadata) -> str:
     for pattern in patterns:
         title = re.sub(pattern, '', title, flags=re.IGNORECASE)
 
-    return title.strip() or video.title
+    # Clean up trailing dashes, underscores, and extra spaces
+    result = re.sub(r'[\s\-_]+$', '', title).strip()
+
+    # If still empty after all processing, use a hash of the file path as fallback
+    if not result:
+        # Last resort: use parent directory name as title
+        parent_dir = os.path.basename(os.path.dirname(video.file_path))
+        if parent_dir and parent_dir not in ('Season 01', 'Season 02', 'Season 1', 'Season 2'):
+            result = parent_dir
+        else:
+            # Use grandparent directory
+            grandparent = os.path.basename(os.path.dirname(os.path.dirname(video.file_path)))
+            result = grandparent if grandparent else "Unknown Series"
+
+    return result
 
 
 def get_series_id(video: VideoMetadata) -> str:

@@ -7,6 +7,7 @@ Handles reconnection when the leader changes or becomes unavailable.
 from __future__ import annotations
 
 import os
+import json
 import threading
 from typing import List, Optional, Callable
 
@@ -301,6 +302,45 @@ class LeaderStorage(StorageProvider):
         # Parse tagline
         tagline = data.get('tagline')
 
+        # Get video/audio codec and resolution from various field formats
+        # New format: stream/0, stream/1, etc. as JSON strings
+        # Old format: fileinfo/streamdetails/video/0/... as flat keys
+        video_codec = data.get('videoCodec')
+        audio_codec = data.get('audioCodec')
+        width = parse_int(data.get('width'))
+        height = parse_int(data.get('height'))
+
+        # Try new stream/* JSON format first
+        if not video_codec or not width or not height or not audio_codec:
+            for i in range(20):  # Check up to 20 streams
+                stream_key = f'stream/{i}'
+                stream_json = data.get(stream_key)
+                if not stream_json:
+                    break
+                try:
+                    stream = json.loads(stream_json) if isinstance(stream_json, str) else stream_json
+                    stream_type = stream.get('type', '')
+                    if stream_type == 'video' and not video_codec:
+                        video_codec = stream.get('codec')
+                        if not width:
+                            width = parse_int(stream.get('width'))
+                        if not height:
+                            height = parse_int(stream.get('height'))
+                    elif stream_type == 'audio' and not audio_codec:
+                        audio_codec = stream.get('codec')
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        # Fall back to old flat key format
+        if not video_codec:
+            video_codec = data.get('fileinfo/streamdetails/video/0/codec')
+        if not audio_codec:
+            audio_codec = data.get('fileinfo/streamdetails/audio/0/codec')
+        if not width:
+            width = parse_int(data.get('fileinfo/streamdetails/video/0/width'))
+        if not height:
+            height = parse_int(data.get('fileinfo/streamdetails/video/0/height'))
+
         return VideoMetadata(
             hash_id=hash_id,
             file_path=resolved_path,
@@ -310,10 +350,10 @@ class LeaderStorage(StorageProvider):
             season=parse_int(data.get('season')),
             episode=parse_int(data.get('episode')),
             duration=parse_float(data.get('duration', data.get('fileinfo/duration'))),
-            width=parse_int(data.get('width', data.get('fileinfo/streamdetails/video/0/width'))),
-            height=parse_int(data.get('height', data.get('fileinfo/streamdetails/video/0/height'))),
-            video_codec=data.get('videoCodec', data.get('fileinfo/streamdetails/video/0/codec')),
-            audio_codec=data.get('audioCodec', data.get('fileinfo/streamdetails/audio/0/codec')),
+            width=width,
+            height=height,
+            video_codec=video_codec,
+            audio_codec=audio_codec,
             container=data.get('container'),
             file_size=parse_int(data.get('fileSize', data.get('sizeByte'))),
             audio_tracks=audio_tracks,
@@ -424,6 +464,37 @@ class LeaderStorage(StorageProvider):
             print(f"[LeaderStorage] Error finding video by IMDB ID {imdb_id}: {e}")
 
         return None
+
+    def get_file_path_by_cid(self, cid: str) -> Optional[str]:
+        """
+        Get the file path for a file by its CID.
+
+        Looks up file:{cid} in Redis and returns the path.
+        Tries 'path' field first, then falls back to 'filePath'.
+        This works for any file including poster images.
+
+        Returns the relative path if found, None otherwise.
+        """
+        if not self.is_connected():
+            return None
+
+        try:
+            key = self._get_file_key(cid)
+            # Try 'path' field first (relative path)
+            path = self._client.hget(key, 'path')
+            if path:
+                return path
+            # Fall back to 'filePath' (full path from meta-sort)
+            file_path = self._client.hget(key, 'filePath')
+            if file_path:
+                # Convert absolute path to relative by removing /files/ prefix
+                if file_path.startswith('/files/'):
+                    return file_path[7:]  # Remove '/files/'
+                return file_path
+            return None
+        except Exception as e:
+            print(f"[LeaderStorage] Error getting path for CID {cid}: {e}")
+            return None
 
     def get_video_count(self) -> int:
         """Get total number of videos."""

@@ -187,20 +187,41 @@ class RedisStorage(StorageProvider):
         tagline = data.get('tagline')
 
         # Get video/audio codec and resolution from various field formats
-        # meta-sort stores these in fileinfo/streamdetails/video/0/... format
+        # New format: stream/0, stream/1, etc. as JSON strings
+        # Old format: fileinfo/streamdetails/video/0/... as flat keys
         video_codec = data.get('videoCodec')
+        audio_codec = data.get('audioCodec')
+        width = parse_int(data.get('width'))
+        height = parse_int(data.get('height'))
+
+        # Try new stream/* JSON format first
+        if not video_codec or not width or not height or not audio_codec:
+            for i in range(20):  # Check up to 20 streams
+                stream_key = f'stream/{i}'
+                stream_json = data.get(stream_key)
+                if not stream_json:
+                    break
+                try:
+                    stream = json.loads(stream_json) if isinstance(stream_json, str) else stream_json
+                    stream_type = stream.get('type', '')
+                    if stream_type == 'video' and not video_codec:
+                        video_codec = stream.get('codec')
+                        if not width:
+                            width = parse_int(stream.get('width'))
+                        if not height:
+                            height = parse_int(stream.get('height'))
+                    elif stream_type == 'audio' and not audio_codec:
+                        audio_codec = stream.get('codec')
+                except (json.JSONDecodeError, TypeError):
+                    pass
+
+        # Fall back to old flat key format
         if not video_codec:
             video_codec = data.get('fileinfo/streamdetails/video/0/codec')
-
-        audio_codec = data.get('audioCodec')
         if not audio_codec:
             audio_codec = data.get('fileinfo/streamdetails/audio/0/codec')
-
-        width = parse_int(data.get('width'))
         if not width:
             width = parse_int(data.get('fileinfo/streamdetails/video/0/width'))
-
-        height = parse_int(data.get('height'))
         if not height:
             height = parse_int(data.get('fileinfo/streamdetails/video/0/height'))
 

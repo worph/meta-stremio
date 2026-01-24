@@ -166,7 +166,7 @@ class Handler(BaseHTTPRequestHandler):
                 cid = m.group(1)
                 # Check if file exists by looking up CID in metadata
                 file_path = fileserver.get_file_path(cid)
-                if file_path and os.path.exists(file_path):
+                if file_path and webdav_client.file_exists(file_path):
                     self.send_response(200)
                     self.send_header('Access-Control-Allow-Origin', '*')
                     self.send_header('Content-Type', 'image/jpeg')

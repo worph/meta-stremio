@@ -1,11 +1,11 @@
 """
 WebDAV Client for Meta-Stremio
 
-Provides HTTP-based file access to meta-sort's WebDAV server.
+Provides HTTP-based file access to meta-core's WebDAV server.
 This allows meta-stremio to access files without direct volume mounts.
 
 Environment Variables:
-- META_SORT_WEBDAV_URL: Base URL for WebDAV access (e.g., http://meta-sort/webdav)
+- META_CORE_WEBDAV_URL: Base URL for WebDAV access (e.g., http://meta-core/webdav)
 - FILES_PATH: Local files path prefix to strip when building WebDAV URLs (default: /files)
 """
 from __future__ import annotations
@@ -18,14 +18,14 @@ from urllib.parse import quote
 import requests
 
 # Configuration
-WEBDAV_URL = os.environ.get('META_SORT_WEBDAV_URL', '').rstrip('/')
+WEBDAV_URL = os.environ.get('META_CORE_WEBDAV_URL', '').rstrip('/')
 FILES_PATH = os.environ.get('FILES_PATH', '/files')
 
 # Check if WebDAV is enabled
 WEBDAV_ENABLED = bool(WEBDAV_URL)
 
 if WEBDAV_ENABLED:
-    print(f"[WebDAV] Using meta-sort WebDAV at {WEBDAV_URL}")
+    print(f"[WebDAV] Using meta-core WebDAV at {WEBDAV_URL}")
 else:
     print("[WebDAV] Not configured, using direct filesystem access")
 

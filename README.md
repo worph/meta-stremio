@@ -145,9 +145,9 @@ python server.py
 | `SEGMENT_DURATION` | `4` | HLS segment length (seconds) |
 | `PREFETCH_SEGMENTS` | `4` | Segments to prefetch ahead |
 | `SCHEME` | `auto` | URL scheme (`http`, `https`, `auto`) |
-| `META_SORT_WEBDAV_URL` | - | WebDAV URL for file access (e.g., `http://meta-sort/webdav`) |
+| `META_CORE_WEBDAV_URL` | - | WebDAV URL for file access (e.g., `http://meta-core/webdav`) |
 
-**WebDAV File Access**: When `META_SORT_WEBDAV_URL` is set, meta-stremio reads files via HTTP from meta-sort's WebDAV server instead of direct filesystem access. This enables access to SMB/rclone mounts that are dynamically mounted inside meta-sort.
+**WebDAV File Access**: When `META_CORE_WEBDAV_URL` is set, meta-stremio reads files via HTTP from meta-core's WebDAV server instead of direct filesystem access. This enables access to SMB/rclone mounts that are dynamically mounted inside meta-core.
 
 ## API Endpoints
 

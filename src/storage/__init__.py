@@ -11,7 +11,7 @@ Also provides service discovery for inter-service communication.
 from .provider import StorageProvider, VideoMetadata
 from .redis_storage import RedisStorage
 from .leader_storage import LeaderStorage
-from .leader_discovery import LeaderDiscovery, LeaderLockInfo
+from .leader_client import LeaderClient, LeaderLockInfo
 from .service_discovery import (
     ServiceDiscovery,
     ServiceInfo,
@@ -24,7 +24,7 @@ __all__ = [
     'VideoMetadata',
     'RedisStorage',
     'LeaderStorage',
-    'LeaderDiscovery',
+    'LeaderClient',
     'LeaderLockInfo',
     'ServiceDiscovery',
     'ServiceInfo',

@@ -22,11 +22,10 @@ from urllib.parse import quote
 from typing import Optional, List, Dict
 from collections import defaultdict
 
-from storage import StorageProvider, VideoMetadata, RedisStorage, LeaderStorage
+from storage import StorageProvider, VideoMetadata, LeaderStorage
 
 # Configuration
 MEDIA_DIR = os.environ.get('MEDIA_DIR', '/files/watch')
-STORAGE_MODE = os.environ.get('STORAGE_MODE', 'redis').lower()  # 'leader' or 'redis'
 
 # Poster dimensions for Stremio
 POSTER_WIDTH = 342  # Stremio standard poster width
@@ -68,23 +67,15 @@ def get_poster_url(cid: Optional[str], width: Optional[int] = None) -> str:
 
 
 def init_storage() -> StorageProvider:
-    """Initialize the storage provider based on configuration.
+    """Initialize the storage provider.
 
-    Storage modes:
-    - 'leader': Use leader discovery to find the KV store (recommended)
-    - 'redis': Direct Redis connection using REDIS_URL
+    Uses LeaderStorage which reads leader info from meta-core.
     """
     global _storage
 
-    if STORAGE_MODE == 'redis':
-        _storage = RedisStorage()
-        _storage.connect()
-        print(f"[Stremio] Using Redis storage")
-    else:
-        # Default to leader discovery
-        _storage = LeaderStorage()
-        _storage.connect()
-        print(f"[Stremio] Using leader discovery storage")
+    _storage = LeaderStorage()
+    _storage.connect()
+    print("[Stremio] Using leader storage (reads leader info from meta-core)")
 
     return _storage
 

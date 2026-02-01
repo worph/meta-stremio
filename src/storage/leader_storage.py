@@ -1,7 +1,7 @@
 """
 Leader-aware Storage Provider for meta-stremio.
 
-Uses leader discovery to automatically connect to the KV leader.
+Uses LeaderClient to read leader info from meta-core.
 Handles reconnection when the leader changes or becomes unavailable.
 """
 from __future__ import annotations
@@ -12,7 +12,7 @@ import threading
 from typing import List, Optional, Callable
 
 from .provider import StorageProvider, VideoMetadata
-from .leader_discovery import LeaderDiscovery, LeaderLockInfo
+from .leader_client import LeaderClient, LeaderLockInfo
 
 try:
     import redis
@@ -32,8 +32,8 @@ class LeaderStorage(StorageProvider):
     """
     Storage provider that discovers and connects to the KV leader.
 
-    Uses leader discovery to automatically find the Redis instance
-    managed by meta-sort. Handles reconnection on leader failure.
+    Uses LeaderClient to read leader info from meta-core.
+    Handles reconnection on leader failure.
     """
 
     def __init__(
@@ -51,7 +51,7 @@ class LeaderStorage(StorageProvider):
         self._prefix = prefix or REDIS_PREFIX
         self._override_url = redis_url  # Direct Redis URL (skip leader discovery)
 
-        self._leader_discovery: Optional[LeaderDiscovery] = None
+        self._leader_client: Optional[LeaderClient] = None
         self._client: Optional[redis.Redis] = None
         self._connected = False
         self._lock = threading.Lock()
@@ -61,31 +61,39 @@ class LeaderStorage(StorageProvider):
         self._on_disconnect_callbacks: List[Callable[[], None]] = []
 
     def connect(self) -> None:
-        """Connect to the storage backend via leader discovery."""
+        """Connect to the storage backend via leader client."""
         # If direct URL provided, skip leader discovery
         if self._override_url:
             print(f"[LeaderStorage] Using direct Redis URL: {self._override_url}")
             self._connect_to_redis(self._override_url)
             return
 
-        # Use leader discovery
-        self._leader_discovery = LeaderDiscovery(
+        # Use leader client
+        self._leader_client = LeaderClient(
             meta_core_path=self._meta_core_path
         )
 
-        # Set up callbacks
-        self._leader_discovery.on_leader_found(self._on_leader_found)
-        self._leader_discovery.on_leader_lost(self._on_leader_lost)
+        # Set up change callback
+        self._leader_client.on_change(self._on_leader_change)
 
-        # Start discovery
-        self._leader_discovery.start()
+        # Wait for leader and connect
+        try:
+            info = self._leader_client.wait_for_leader(30000)
+            print(f"[LeaderStorage] Connecting to leader at {info.redis_url}...")
+            self._connect_to_redis(info.redis_url)
+        except TimeoutError as e:
+            print(f"[LeaderStorage] Failed to find leader: {e}")
+            return
+
+        # Start watching for leader changes
+        self._leader_client.start_watching()
 
     def disconnect(self) -> None:
         """Disconnect from the storage backend."""
-        # Stop leader discovery
-        if self._leader_discovery:
-            self._leader_discovery.stop()
-            self._leader_discovery = None
+        # Stop leader client
+        if self._leader_client:
+            self._leader_client.close()
+            self._leader_client = None
 
         # Disconnect Redis
         self._disconnect_redis()
@@ -102,16 +110,20 @@ class LeaderStorage(StorageProvider):
                 self._connected = False
                 return False
 
-    def _on_leader_found(self, info: LeaderLockInfo) -> None:
-        """Handle leader found event."""
-        print(f"[LeaderStorage] Connecting to leader at {info.api}...")
-        self._connect_to_redis(info.api)
-
-    def _on_leader_lost(self) -> None:
-        """Handle leader lost event."""
-        print("[LeaderStorage] Leader lost, disconnecting...")
+    def _on_leader_change(self) -> None:
+        """Handle leader change event."""
+        print("[LeaderStorage] Leader changed, reconnecting...")
         self._disconnect_redis()
         self._notify_disconnect()
+
+        # Reconnect to new leader
+        if self._leader_client:
+            try:
+                info = self._leader_client.wait_for_leader(30000)
+                print(f"[LeaderStorage] Reconnecting to leader at {info.redis_url}...")
+                self._connect_to_redis(info.redis_url)
+            except TimeoutError as e:
+                print(f"[LeaderStorage] Failed to reconnect: {e}")
 
     def _connect_to_redis(self, url: str) -> None:
         """Connect to Redis."""
@@ -523,13 +535,15 @@ class LeaderStorage(StorageProvider):
     def get_status(self) -> dict:
         """Get storage status for dashboard."""
         leader_info = None
-        if self._leader_discovery:
-            info = self._leader_discovery.get_leader_info()
+        if self._leader_client:
+            info = self._leader_client.get_cached_leader_info()
             if info:
                 leader_info = {
-                    'host': info.host,
-                    'api': info.api,
-                    'http': info.http,
+                    'hostname': info.hostname,
+                    'base_url': info.base_url,
+                    'api_url': info.api_url,
+                    'redis_url': info.redis_url,
+                    'webdav_url': info.webdav_url,
                 }
 
         status = {

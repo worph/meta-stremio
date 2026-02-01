@@ -161,9 +161,7 @@ python server.py
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/stats` | GET | Library statistics |
-| `/api/storage-status` | GET | KV connection status |
 | `/api/library` | GET | Full library list |
-| `/api/library/refresh` | POST | Refresh library from KV |
 
 ### Stremio Protocol
 | Endpoint | Method | Description |

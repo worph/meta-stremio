@@ -276,25 +276,6 @@
             font-size: 0.85rem;
         }
 
-        /* Storage info */
-        .storage-info {
-            display: flex;
-            flex-direction: column;
-            gap: 0.5rem;
-        }
-
-        .storage-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .storage-type {
-            font-size: 1.1rem;
-            font-weight: 600;
-            color: var(--accent-primary);
-        }
-
         /* Footer */
         footer {
             text-align: center;
@@ -421,33 +402,6 @@
                 </div>
             </div>
 
-            <!-- Storage Status -->
-            <div class="card">
-                <h2><span class="icon">💾</span> Storage Status</h2>
-                <div class="storage-info">
-                    <div class="storage-row">
-                        <span class="storage-type" id="storageType">Loading...</span>
-                        <span class="status status-loading" id="storageStatus">
-                            <span class="status-dot"></span>
-                            <span id="storageStatusText">Checking...</span>
-                        </span>
-                    </div>
-                    <div class="storage-row" id="redisUrlRow" style="display: none;">
-                        <span class="metric-label">Leader</span>
-                        <span class="metric-value" id="redisUrl"></span>
-                    </div>
-                    <div class="storage-row">
-                        <span class="metric-label">Prefix</span>
-                        <span class="metric-value" id="storagePrefix">meta-sort:</span>
-                    </div>
-                    <div style="margin-top: 0.5rem;">
-                        <button onclick="refreshLibrary()" class="btn btn-secondary" style="width: 100%;">
-                            🔄 Refresh Library
-                        </button>
-                    </div>
-                </div>
-            </div>
-
             <!-- Library Stats -->
             <div class="card">
                 <h2><span class="icon">📚</span> Library</h2>
@@ -538,50 +492,6 @@
             });
         }
 
-        async function fetchStorageStatus() {
-            try {
-                const res = await fetch('/api/storage-status');
-                const data = await res.json();
-
-                const statusEl = document.getElementById('storageStatus');
-                const statusText = document.getElementById('storageStatusText');
-                const typeEl = document.getElementById('storageType');
-
-                // Display storage type
-                const typeNames = {
-                    'leader': 'Leader Discovery',
-                    'redis': 'Redis Direct'
-                };
-                typeEl.textContent = typeNames[data.type] || data.type;
-
-                if (data.connected) {
-                    statusEl.className = 'status status-connected';
-                    statusText.textContent = 'Connected';
-                } else {
-                    statusEl.className = 'status status-disconnected';
-                    statusText.textContent = 'Disconnected';
-                }
-
-                // Show leader info for leader mode
-                const redisUrlRow = document.getElementById('redisUrlRow');
-                if (data.leader && data.leader.api) {
-                    redisUrlRow.style.display = 'flex';
-                    document.getElementById('redisUrl').textContent = data.leader.host + ' (' + data.leader.api.replace('redis://', '') + ')';
-                } else if (data.type === 'redis' && data.url) {
-                    redisUrlRow.style.display = 'flex';
-                    document.getElementById('redisUrl').textContent = data.url.replace(/\/\/[^:]+:[^@]+@/, '//***:***@');
-                } else {
-                    redisUrlRow.style.display = 'none';
-                }
-
-                if (data.prefix) {
-                    document.getElementById('storagePrefix').textContent = data.prefix;
-                }
-            } catch (e) {
-                console.error('Failed to fetch storage status:', e);
-            }
-        }
-
         async function fetchStats() {
             try {
                 const res = await fetch('/api/stats');
@@ -637,39 +547,13 @@
             }
         }
 
-        async function refreshLibrary() {
-            try {
-                const btn = event.target.closest('.btn');
-                btn.disabled = true;
-                btn.innerHTML = '⏳ Refreshing...';
-
-                await fetch('/api/library/refresh', { method: 'POST' });
-
-                await fetchStats();
-                await fetchStorageStatus();
-
-                btn.innerHTML = '✓ Refreshed!';
-                setTimeout(() => {
-                    btn.disabled = false;
-                    btn.innerHTML = '🔄 Refresh Library';
-                }, 2000);
-            } catch (e) {
-                console.error('Failed to refresh library:', e);
-                const btn = event.target.closest('.btn');
-                btn.disabled = false;
-                btn.innerHTML = '❌ Failed';
-                setTimeout(() => {
-                    btn.innerHTML = '🔄 Refresh Library';
-                }, 2000);
-            }
-        }
-
         // Service icons mapping
         const serviceIcons = {
             'meta-sort': '📁',
             'meta-fuse': '🗂️',
             'meta-stremio': '🎬',
             'meta-orbit': '🌐',
+            'meta-core': '⚙️',
             'default': '📦'
         };
 
@@ -722,7 +606,6 @@
         }
 
         // Initial fetch
-        fetchStorageStatus();
         fetchStats();
         fetchMetrics();
         fetchServices();

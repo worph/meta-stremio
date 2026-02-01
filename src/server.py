@@ -13,7 +13,6 @@ Environment Variables:
 - MEDIA_DIR: Directory containing video files (default: /files/watch)
 - CACHE_DIR: Directory for transcoded segments (default: /data/cache)
 - PORT: HTTP server port (default: 7000)
-- STORAGE_MODE: Storage backend 'leader' or 'redis' (default: redis)
 - META_CORE_PATH: Path to meta-core shared volume (default: /meta-core)
 - REDIS_URL: Redis connection URL (default: redis://localhost:6379)
 - REDIS_PREFIX: Redis key prefix (default: empty)
@@ -183,20 +182,6 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
 
-        # Library refresh endpoint
-        if path == '/api/library/refresh':
-            try:
-                # Reconnect storage to refresh
-                storage = stremio.get_storage()
-                if hasattr(storage, 'disconnect'):
-                    storage.disconnect()
-                stremio.init_storage()
-                # Reinitialize fileserver with new storage
-                fileserver.init(stremio.get_storage())
-                return self.send_json({'status': 'ok', 'message': 'Library refreshed'})
-            except Exception as e:
-                return self.send_json({'status': 'error', 'message': str(e)}, 500)
-
         # Reset metrics
         if path == '/transcode/reset-metrics':
             transcoder.reset_metrics()
@@ -234,11 +219,6 @@ class Handler(BaseHTTPRequestHandler):
             })
 
         # === Dashboard API ===
-
-        # Storage status
-        if path == '/api/storage-status':
-            storage = stremio.get_storage()
-            return self.send_json(storage.get_status() if storage else {'connected': False})
 
         # Library stats
         if path == '/api/stats':
@@ -607,17 +587,24 @@ class Handler(BaseHTTPRequestHandler):
                 all_services = sd.discover_all_services()
 
                 for svc in all_services:
-                    # Build dashboard URL from API URL
-                    api_url = svc.get('api', '')
+                    # Filter out follower meta-core instances (only show leader)
+                    svc_name = svc.get('name', '')
+                    svc_role = svc.get('role', '')
+                    if svc_name == 'meta-core' and svc_role != 'leader':
+                        continue
+
+                    # Build dashboard URL from base URL (supports both 'baseUrl' and legacy 'api')
+                    api_url = svc.get('baseUrl', '') or svc.get('api', '')
                     dashboard_path = svc.get('endpoints', {}).get('dashboard', '/')
 
                     services.append({
-                        'name': svc.get('name', 'Unknown'),
+                        'name': svc_name or 'Unknown',
                         'url': api_url + dashboard_path if api_url else '',
                         'api': api_url,
                         'status': svc.get('status', 'unknown'),
                         'capabilities': svc.get('capabilities', []),
                         'version': svc.get('version', ''),
+                        'role': svc_role or None,
                     })
         except Exception as e:
             print(f"[Server] Error discovering services: {e}")
@@ -631,9 +618,9 @@ class Handler(BaseHTTPRequestHandler):
                     info = discovery.get_leader_info()
                     if info:
                         leader_info = {
-                            'host': info.host if hasattr(info, 'host') else info.get('host', ''),
-                            'api': info.api if hasattr(info, 'api') else info.get('api', ''),
-                            'http': info.http if hasattr(info, 'http') else info.get('http', ''),
+                            'host': info.hostname if hasattr(info, 'hostname') else info.get('hostname', ''),
+                            'api': info.api_url if hasattr(info, 'api_url') else info.get('apiUrl', ''),
+                            'http': info.base_url if hasattr(info, 'base_url') else info.get('baseUrl', ''),
                         }
         except Exception as e:
             print(f"[Server] Error getting leader info: {e}")

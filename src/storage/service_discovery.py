@@ -1,8 +1,8 @@
 """
 Service Discovery for meta-stremio.
 
-Python implementation of the service discovery pattern used in meta-sort.
-Each service registers itself in /meta-core/services/{service-name}.json
+Python implementation of the service discovery pattern used in meta-sort/meta-fuse.
+Each service registers itself in /meta-core/services/{service-name}-{hostname}.json
 and can discover other registered services.
 
 Features:
@@ -18,7 +18,7 @@ import json
 import socket
 import threading
 import time
-from dataclasses import dataclass, field, asdict
+from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
 from typing import List, Optional, Dict, Callable
@@ -35,17 +35,23 @@ BASE_URL = os.environ.get('BASE_URL', '')
 
 @dataclass
 class ServiceInfo:
-    """Service registration info stored in JSON file."""
+    """
+    Service registration info stored in JSON file.
+
+    Simplified format matching TypeScript ServiceInfo interface:
+    - name: Service name (e.g., 'meta-stremio')
+    - hostname: Container/host hostname
+    - baseUrl: Base URL for the service (e.g., 'http://localhost:8182')
+    - status: Current status ('running' | 'stale' | 'stopped')
+    - lastHeartbeat: ISO timestamp of last heartbeat
+    - role: Optional role ('leader' | 'follower') - only used by meta-core
+    """
     name: str
-    version: str
-    api: str  # HTTP API URL (e.g., http://10.0.1.50:7000)
-    status: str = 'starting'  # starting | running | stopping | stopped
-    pid: int = 0
-    hostname: str = ''
-    startedAt: str = ''
+    hostname: str
+    baseUrl: str
+    status: str = 'running'  # running | stale | stopped
     lastHeartbeat: str = ''
-    capabilities: List[str] = field(default_factory=list)
-    endpoints: Dict[str, str] = field(default_factory=dict)
+    role: Optional[str] = None  # "leader", "follower", or None (for non-meta-core services)
 
     def to_dict(self) -> dict:
         """Convert to dictionary for JSON serialization."""
@@ -56,7 +62,7 @@ class ServiceDiscovery:
     """
     Service Discovery using shared filesystem.
 
-    Each service registers itself in /meta-core/services/{service-name}.json
+    Each service registers itself in /meta-core/services/{service-name}-{hostname}.json
     and can discover other registered services.
     """
 
@@ -74,21 +80,20 @@ class ServiceDiscovery:
     ):
         self.meta_core_path = meta_core_path or META_CORE_PATH
         self.service_name = service_name or SERVICE_NAME
-        self.version = version or SERVICE_VERSION
         # Use base_url if provided, then api_url, then env BASE_URL, then auto-detect
-        self.api_url = base_url or api_url or BASE_URL or self._get_default_api_url()
-        self.capabilities = capabilities or ['streaming', 'transcoding', 'hls']
-        self.endpoints = endpoints or {
-            'health': '/health',
-            'manifest': '/manifest.json',
-            'dashboard': '/',
-            'api': '/api',
-        }
+        self.base_url = base_url or api_url or BASE_URL or self._get_default_api_url()
         self.heartbeat_interval = heartbeat_interval
         self.stale_threshold = stale_threshold
 
+        # Keep for backwards compatibility but not used in simplified format
+        self._version = version or SERVICE_VERSION
+        self._capabilities = capabilities or []
+        self._endpoints = endpoints or {}
+
+        self.current_hostname = socket.gethostname()
         self.services_dir = os.path.join(self.meta_core_path, 'services')
-        self.service_file_path = os.path.join(self.services_dir, f'{self.service_name}.json')
+        # Use hostname-based file naming like TypeScript services
+        self.service_file_path = os.path.join(self.services_dir, f'{self.service_name}-{self.current_hostname}.json')
 
         self._heartbeat_thread: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
@@ -116,20 +121,14 @@ class ServiceDiscovery:
         """Ensure services directory exists."""
         Path(self.services_dir).mkdir(parents=True, exist_ok=True)
 
-    def _build_service_info(self, status: str = 'starting') -> ServiceInfo:
-        """Build service info for this service."""
-        now = datetime.utcnow().isoformat() + 'Z'
+    def _build_service_info(self, status: str = 'running') -> ServiceInfo:
+        """Build service info for this service (simplified format)."""
         return ServiceInfo(
             name=self.service_name,
-            version=self.version,
-            api=self.api_url,
+            hostname=self.current_hostname,
+            baseUrl=self.base_url,
             status=status,
-            pid=os.getpid(),
-            hostname=socket.gethostname(),
-            startedAt=now,
-            lastHeartbeat=now,
-            capabilities=self.capabilities,
-            endpoints=self.endpoints
+            lastHeartbeat=datetime.utcnow().isoformat() + 'Z'
         )
 
     def register(self) -> None:
@@ -236,22 +235,34 @@ class ServiceDiscovery:
             return True
 
     def discover_service(self, name: str) -> Optional[dict]:
-        """Discover a service by name."""
-        service_path = os.path.join(self.services_dir, f'{name}.json')
-
+        """
+        Discover a service by name.
+        Looks for files matching pattern: {name}-*.json (hostname-based naming)
+        Falls back to exact match {name}.json for backwards compatibility.
+        """
         try:
-            with open(service_path, 'r') as f:
-                info = json.load(f)
-
-            # Check if service is alive
-            if self._is_service_stale(info):
-                print(f'[ServiceDiscovery] Service {name} appears stale')
+            if not os.path.exists(self.services_dir):
                 return None
 
-            return info
+            # First try exact match for backward compatibility
+            exact_path = os.path.join(self.services_dir, f'{name}.json')
+            if os.path.exists(exact_path):
+                with open(exact_path, 'r') as f:
+                    info = json.load(f)
+                if not self._is_service_stale(info) and info.get('status') == 'running':
+                    return info
 
-        except FileNotFoundError:
+            # Search for hostname-based files: name-*.json
+            for filename in os.listdir(self.services_dir):
+                if filename.startswith(f'{name}-') and filename.endswith('.json'):
+                    filepath = os.path.join(self.services_dir, filename)
+                    with open(filepath, 'r') as f:
+                        info = json.load(f)
+                    if not self._is_service_stale(info) and info.get('status') == 'running':
+                        return info
+
             return None
+
         except Exception as e:
             print(f'[ServiceDiscovery] Error discovering {name}: {e}')
             return None
@@ -259,6 +270,8 @@ class ServiceDiscovery:
     def discover_all_services(self) -> List[dict]:
         """Discover all registered services."""
         services = []
+        seen_names = set()
+        meta_core_instances = []  # Collect all meta-core instances to pick leader
 
         try:
             if not os.path.exists(self.services_dir):
@@ -268,11 +281,40 @@ class ServiceDiscovery:
                 if not filename.endswith('.json'):
                     continue
 
-                name = filename.replace('.json', '')
-                service = self.discover_service(name)
+                filepath = os.path.join(self.services_dir, filename)
+                try:
+                    with open(filepath, 'r') as f:
+                        info = json.load(f)
 
-                if service and service.get('status') == 'running':
-                    services.append(service)
+                    # Skip stale or non-running services
+                    if self._is_service_stale(info):
+                        continue
+                    if info.get('status') != 'running':
+                        continue
+
+                    name = info.get('name', '')
+
+                    # Special handling for meta-core: collect all instances
+                    # to pick the leader later (filesystem order is unreliable)
+                    if name == 'meta-core':
+                        meta_core_instances.append(info)
+                        continue
+
+                    # Deduplicate by service name (keep first found)
+                    if name and name not in seen_names:
+                        seen_names.add(name)
+                        services.append(info)
+
+                except Exception as e:
+                    print(f'[ServiceDiscovery] Failed to read {filename}: {e}')
+
+            # Add meta-core: prefer leader, fallback to first instance
+            if meta_core_instances:
+                leader = next(
+                    (s for s in meta_core_instances if s.get('role') == 'leader'),
+                    meta_core_instances[0]  # Fallback if no leader found
+                )
+                services.append(leader)
 
         except Exception as e:
             print(f'[ServiceDiscovery] Error discovering services: {e}')
@@ -285,8 +327,12 @@ class ServiceDiscovery:
         if not service:
             return False
 
-        health_endpoint = service.get('endpoints', {}).get('health', '/health')
-        url = f"{service['api']}{health_endpoint}"
+        # Use baseUrl (new format) or api (legacy format)
+        base_url = service.get('baseUrl', '') or service.get('api', '')
+        if not base_url:
+            return False
+
+        url = f"{base_url}/health"
 
         try:
             with urlopen(url, timeout=5) as response:
@@ -312,7 +358,7 @@ class ServiceDiscovery:
                 self.register()
                 self.update_status('running')
                 self.start_heartbeat()
-                print(f'[ServiceDiscovery] Started {self.service_name} at {self.api_url}')
+                print(f'[ServiceDiscovery] Started {self.service_name}-{self.current_hostname} at {self.base_url}')
             except Exception as e:
                 print(f'[ServiceDiscovery] Registration failed (read-only?): {e}')
                 print(f'[ServiceDiscovery] Running in discovery-only mode')

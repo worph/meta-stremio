@@ -98,32 +98,88 @@ class LeaderClient:
         self._on_change_callbacks: list[Callable[[], None]] = []
         self._stop_event = threading.Event()
 
-    def get_leader_info(self) -> Optional[LeaderLockInfo]:
-        """Read leader info from the info file."""
+        # URL caching
+        self._cached_urls: Optional[URLsResponse] = None
+        self._urls_cache_time: float = 0
+        self._urls_cache_ttl: float = 5.0  # 5 seconds
+
+    def _get_api_url_from_file(self) -> Optional[str]:
+        """Read API URL from file (plain text format)."""
         try:
             with open(self.info_file_path, 'r') as f:
                 content = f.read()
+            return content.strip() or None
+        except FileNotFoundError:
+            print(f"[LeaderClient] Leader info file not found: {self.info_file_path}")
+            return None
+        except Exception as e:
+            print(f"[LeaderClient] Error reading API URL from file: {e}")
+            return None
 
-            data = json.loads(content)
+    def _fetch_urls(self, api_url: str) -> Optional[URLsResponse]:
+        """Fetch URLs from meta-core /urls API with caching."""
+        import time
 
+        # Check cache
+        now = time.time()
+        if self._cached_urls and (now - self._urls_cache_time) < self._urls_cache_ttl:
+            return self._cached_urls
+
+        try:
+            url = f"{api_url}/urls"
+            req = Request(url, headers={'Accept': 'application/json'})
+            with urlopen(req, timeout=5) as response:
+                if response.status != 200:
+                    print(f"[LeaderClient] Failed to fetch URLs: {response.status}")
+                    return None
+
+                data = json.loads(response.read().decode())
+
+                self._cached_urls = URLsResponse(
+                    hostname=data.get('hostname', ''),
+                    base_url=data.get('baseUrl', ''),
+                    api_url=data.get('apiUrl', ''),
+                    redis_url=data.get('redisUrl', ''),
+                    webdav_url=data.get('webdavUrl', ''),
+                    is_leader=data.get('isLeader', False)
+                )
+                self._urls_cache_time = now
+                return self._cached_urls
+
+        except URLError as e:
+            print(f"[LeaderClient] Error calling /urls API: {e}")
+            return None
+        except Exception as e:
+            print(f"[LeaderClient] Error fetching URLs: {e}")
+            return None
+
+    def get_leader_info(self) -> Optional[LeaderLockInfo]:
+        """Read leader info from file and /urls API."""
+        try:
+            # Read API URL from file (plain text)
+            api_url = self._get_api_url_from_file()
+            if not api_url:
+                return None
+
+            # Fetch full info from /urls API
+            urls = self._fetch_urls(api_url)
+            if not urls:
+                return None
+
+            # Convert URLsResponse to LeaderLockInfo
+            import time
             self.leader_info = LeaderLockInfo(
-                hostname=data.get('hostname', 'unknown'),
-                base_url=data.get('baseUrl', ''),
-                api_url=data.get('apiUrl', ''),
-                redis_url=data.get('redisUrl', ''),
-                webdav_url=data.get('webdavUrl', ''),
-                timestamp=data.get('timestamp', 0),
-                pid=data.get('pid', 0)
+                hostname=urls.hostname,
+                base_url=urls.base_url,
+                api_url=urls.api_url,
+                redis_url=urls.redis_url,
+                webdav_url=urls.webdav_url,
+                timestamp=int(time.time() * 1000),
+                pid=0  # Unknown for remote leader
             )
 
             return self.leader_info
 
-        except FileNotFoundError:
-            print(f"[LeaderClient] Leader info file not found: {self.info_file_path}")
-            return None
-        except json.JSONDecodeError as e:
-            print(f"[LeaderClient] Error parsing leader info: {e}")
-            return None
         except Exception as e:
             print(f"[LeaderClient] Error reading leader info: {e}")
             return None
@@ -148,40 +204,15 @@ class LeaderClient:
         # First try using configured meta_core_url
         api_url = self.meta_core_url
 
-        # Fall back to reading from leader info
+        # Fall back to reading from file
         if not api_url:
-            info = self.get_leader_info()
-            api_url = info.api_url if info else None
+            api_url = self._get_api_url_from_file()
 
         if not api_url:
             print("[LeaderClient] No meta-core API URL available")
             return None
 
-        try:
-            url = f"{api_url}/urls"
-            req = Request(url, headers={'Accept': 'application/json'})
-            with urlopen(req, timeout=5) as response:
-                if response.status != 200:
-                    print(f"[LeaderClient] Failed to get URLs: {response.status}")
-                    return None
-
-                data = json.loads(response.read().decode())
-
-                return URLsResponse(
-                    hostname=data.get('hostname', ''),
-                    base_url=data.get('baseUrl', ''),
-                    api_url=data.get('apiUrl', ''),
-                    redis_url=data.get('redisUrl', ''),
-                    webdav_url=data.get('webdavUrl', ''),
-                    is_leader=data.get('isLeader', False)
-                )
-
-        except URLError as e:
-            print(f"[LeaderClient] Error calling /urls API: {e}")
-            return None
-        except Exception as e:
-            print(f"[LeaderClient] Error getting URLs: {e}")
-            return None
+        return self._fetch_urls(api_url)
 
     def wait_for_leader(self, timeout_ms: int = 30000) -> LeaderLockInfo:
         """Wait for leader info to be available."""
@@ -232,7 +263,11 @@ class LeaderClient:
 
     def _on_file_change(self) -> None:
         """Handle file change event."""
-        print("[LeaderClient] Leader info changed, reloading...")
+        print("[LeaderClient] Leader info changed, invalidating cache...")
+        # Invalidate cache to force fresh API call
+        self._cached_urls = None
+        self._urls_cache_time = 0
+
         self.get_leader_info()
         self._notify_change()
 

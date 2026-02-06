@@ -2,32 +2,44 @@
 WebDAV Client for Meta-Stremio
 
 Provides HTTP-based file access to meta-core's WebDAV server.
-This allows meta-stremio to access files without direct volume mounts.
+Files are accessed exclusively via WebDAV - no local filesystem access.
 
-Environment Variables:
-- META_CORE_WEBDAV_URL: Base URL for WebDAV access (e.g., http://meta-core/webdav)
-- FILES_PATH: Local files path prefix to strip when building WebDAV URLs (default: /files)
+The WebDAV URL is discovered automatically from the leader via LeaderStorage.
 """
 from __future__ import annotations
 
 import os
-import re
 from typing import Optional, Generator
 from urllib.parse import quote
 
 import requests
 
-# Configuration
-WEBDAV_URL = os.environ.get('META_CORE_WEBDAV_URL', '').rstrip('/')
+# Configuration - set dynamically by LeaderStorage after leader discovery
+WEBDAV_URL: str = ''
 FILES_PATH = os.environ.get('FILES_PATH', '/files')
 
-# Check if WebDAV is enabled
-WEBDAV_ENABLED = bool(WEBDAV_URL)
 
-if WEBDAV_ENABLED:
-    print(f"[WebDAV] Using meta-core WebDAV at {WEBDAV_URL}")
-else:
-    print("[WebDAV] Not configured, using direct filesystem access")
+def configure(webdav_url: str) -> None:
+    """
+    Configure the WebDAV client with a URL discovered from leader.
+
+    Called by LeaderStorage after connecting to the leader.
+
+    Args:
+        webdav_url: The WebDAV base URL (e.g., http://meta-core/webdav)
+    """
+    global WEBDAV_URL
+
+    if not webdav_url:
+        return
+
+    WEBDAV_URL = webdav_url.rstrip('/')
+    print(f"[webdav-client] Configured: {WEBDAV_URL}")
+
+
+def is_configured() -> bool:
+    """Check if WebDAV client is configured."""
+    return bool(WEBDAV_URL)
 
 
 def to_webdav_url(file_path: str) -> Optional[str]:
@@ -38,9 +50,9 @@ def to_webdav_url(file_path: str) -> Optional[str]:
         file_path: Local file path (e.g., /files/watch/movie.mp4)
 
     Returns:
-        WebDAV URL or None if WebDAV is not configured
+        WebDAV URL or None if not configured
     """
-    if not WEBDAV_ENABLED:
+    if not WEBDAV_URL:
         return None
 
     # Strip the FILES_PATH prefix to get relative path
@@ -65,18 +77,14 @@ def get_file_size(file_path: str) -> Optional[int]:
     Get file size via HTTP HEAD request to WebDAV.
 
     Args:
-        file_path: Local file path
+        file_path: File path
 
     Returns:
         File size in bytes, or None on error
     """
     url = to_webdav_url(file_path)
     if not url:
-        # Fall back to local filesystem
-        try:
-            return os.path.getsize(file_path)
-        except OSError:
-            return None
+        return None
 
     try:
         response = requests.head(url, timeout=30)
@@ -84,7 +92,7 @@ def get_file_size(file_path: str) -> Optional[int]:
             return int(response.headers.get('Content-Length', 0))
         return None
     except Exception as e:
-        print(f"[WebDAV] HEAD error for {url}: {e}")
+        print(f"[webdav-client] HEAD error for {url}: {e}")
         return None
 
 
@@ -93,15 +101,14 @@ def file_exists(file_path: str) -> bool:
     Check if file exists via HTTP HEAD request to WebDAV.
 
     Args:
-        file_path: Local file path
+        file_path: File path
 
     Returns:
         True if file exists
     """
     url = to_webdav_url(file_path)
     if not url:
-        # Fall back to local filesystem
-        return os.path.exists(file_path)
+        return False
 
     try:
         response = requests.head(url, timeout=30)
@@ -115,19 +122,14 @@ def read_file(file_path: str) -> Optional[bytes]:
     Read entire file from WebDAV.
 
     Args:
-        file_path: Local file path
+        file_path: File path
 
     Returns:
         File contents as bytes, or None on error
     """
     url = to_webdav_url(file_path)
     if not url:
-        # Fall back to local filesystem
-        try:
-            with open(file_path, 'rb') as f:
-                return f.read()
-        except OSError:
-            return None
+        return None
 
     try:
         response = requests.get(url, timeout=60)
@@ -135,7 +137,7 @@ def read_file(file_path: str) -> Optional[bytes]:
             return response.content
         return None
     except Exception as e:
-        print(f"[WebDAV] GET error for {url}: {e}")
+        print(f"[webdav-client] GET error for {url}: {e}")
         return None
 
 
@@ -144,7 +146,7 @@ def read_range(file_path: str, start: int, end: int) -> Optional[bytes]:
     Read a byte range from a file via WebDAV.
 
     Args:
-        file_path: Local file path
+        file_path: File path
         start: Start byte offset (inclusive)
         end: End byte offset (inclusive)
 
@@ -153,13 +155,7 @@ def read_range(file_path: str, start: int, end: int) -> Optional[bytes]:
     """
     url = to_webdav_url(file_path)
     if not url:
-        # Fall back to local filesystem
-        try:
-            with open(file_path, 'rb') as f:
-                f.seek(start)
-                return f.read(end - start + 1)
-        except OSError:
-            return None
+        return None
 
     try:
         headers = {'Range': f'bytes={start}-{end}'}
@@ -168,7 +164,7 @@ def read_range(file_path: str, start: int, end: int) -> Optional[bytes]:
             return response.content
         return None
     except Exception as e:
-        print(f"[WebDAV] Range GET error for {url}: {e}")
+        print(f"[webdav-client] Range GET error for {url}: {e}")
         return None
 
 
@@ -177,7 +173,7 @@ def stream_file(file_path: str, chunk_size: int = 64 * 1024) -> Generator[bytes,
     Stream file content from WebDAV.
 
     Args:
-        file_path: Local file path
+        file_path: File path
         chunk_size: Size of chunks to yield
 
     Yields:
@@ -185,25 +181,16 @@ def stream_file(file_path: str, chunk_size: int = 64 * 1024) -> Generator[bytes,
     """
     url = to_webdav_url(file_path)
     if not url:
-        # Fall back to local filesystem
-        try:
-            with open(file_path, 'rb') as f:
-                while True:
-                    chunk = f.read(chunk_size)
-                    if not chunk:
-                        break
+        return
+
+    try:
+        response = requests.get(url, stream=True, timeout=300)
+        if response.status_code == 200:
+            for chunk in response.iter_content(chunk_size=chunk_size):
+                if chunk:
                     yield chunk
-        except OSError:
-            return
-    else:
-        try:
-            response = requests.get(url, stream=True, timeout=300)
-            if response.status_code == 200:
-                for chunk in response.iter_content(chunk_size=chunk_size):
-                    if chunk:
-                        yield chunk
-        except Exception as e:
-            print(f"[WebDAV] Stream error for {url}: {e}")
+    except Exception as e:
+        print(f"[webdav-client] Stream error for {url}: {e}")
 
 
 def stream_range(file_path: str, start: int, end: int, file_size: int,
@@ -212,10 +199,10 @@ def stream_range(file_path: str, start: int, end: int, file_size: int,
     Stream a byte range from a file via WebDAV.
 
     Args:
-        file_path: Local file path
+        file_path: File path
         start: Start byte offset (inclusive)
         end: End byte offset (inclusive)
-        file_size: Total file size (for local fallback)
+        file_size: Total file size (unused, kept for API compatibility)
         chunk_size: Size of chunks to yield
 
     Yields:
@@ -223,26 +210,14 @@ def stream_range(file_path: str, start: int, end: int, file_size: int,
     """
     url = to_webdav_url(file_path)
     if not url:
-        # Fall back to local filesystem
-        try:
-            with open(file_path, 'rb') as f:
-                f.seek(start)
-                remaining = end - start + 1
-                while remaining > 0:
-                    chunk = f.read(min(chunk_size, remaining))
-                    if not chunk:
-                        break
+        return
+
+    try:
+        headers = {'Range': f'bytes={start}-{end}'}
+        response = requests.get(url, headers=headers, stream=True, timeout=300)
+        if response.status_code in (200, 206):
+            for chunk in response.iter_content(chunk_size=chunk_size):
+                if chunk:
                     yield chunk
-                    remaining -= len(chunk)
-        except OSError:
-            return
-    else:
-        try:
-            headers = {'Range': f'bytes={start}-{end}'}
-            response = requests.get(url, headers=headers, stream=True, timeout=300)
-            if response.status_code in (200, 206):
-                for chunk in response.iter_content(chunk_size=chunk_size):
-                    if chunk:
-                        yield chunk
-        except Exception as e:
-            print(f"[WebDAV] Stream range error for {url}: {e}")
+    except Exception as e:
+        print(f"[webdav-client] Stream range error for {url}: {e}")

@@ -14,6 +14,9 @@ from typing import List, Optional, Callable
 from .provider import StorageProvider, VideoMetadata
 from .leader_client import LeaderClient, LeaderLockInfo
 
+# Import webdav_client to configure it after leader discovery
+import webdav_client
+
 try:
     import redis
     REDIS_AVAILABLE = True
@@ -81,6 +84,10 @@ class LeaderStorage(StorageProvider):
             info = self._leader_client.wait_for_leader(30000)
             print(f"[LeaderStorage] Connecting to leader at {info.redis_url}...")
             self._connect_to_redis(info.redis_url)
+
+            # Configure WebDAV client with leader's WebDAV URL
+            if info.webdav_url:
+                webdav_client.configure(info.webdav_url)
         except TimeoutError as e:
             print(f"[LeaderStorage] Failed to find leader: {e}")
             return
@@ -122,6 +129,10 @@ class LeaderStorage(StorageProvider):
                 info = self._leader_client.wait_for_leader(30000)
                 print(f"[LeaderStorage] Reconnecting to leader at {info.redis_url}...")
                 self._connect_to_redis(info.redis_url)
+
+                # Reconfigure WebDAV client with new leader's WebDAV URL
+                if info.webdav_url:
+                    webdav_client.configure(info.webdav_url)
             except TimeoutError as e:
                 print(f"[LeaderStorage] Failed to reconnect: {e}")
 

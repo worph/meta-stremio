@@ -54,8 +54,12 @@ class ServiceInfo:
     role: Optional[str] = None  # "leader", "follower", or None (for non-meta-core services)
 
     def to_dict(self) -> dict:
-        """Convert to dictionary for JSON serialization."""
-        return asdict(self)
+        """Convert to dictionary for JSON serialization.
+        Excludes None values to avoid polluting JSON with null fields.
+        """
+        result = asdict(self)
+        # Remove None values (e.g., role should only appear for meta-core)
+        return {k: v for k, v in result.items() if v is not None}
 
 
 class ServiceDiscovery:

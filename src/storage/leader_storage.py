@@ -13,6 +13,7 @@ from typing import List, Optional, Callable
 
 from .provider import StorageProvider, VideoMetadata
 from .leader_client import LeaderClient, LeaderLockInfo
+from .meta_consumer import MetaConsumer
 
 # Import webdav_client to configure it after leader discovery
 import webdav_client
@@ -28,7 +29,7 @@ except ImportError:
 # Configuration from environment
 META_CORE_PATH = os.environ.get('META_CORE_PATH', '/meta-core')
 FILES_PATH = os.environ.get('FILES_PATH', '/files')
-REDIS_PREFIX = os.environ.get('REDIS_PREFIX', 'meta-sort:')
+REDIS_PREFIX = os.environ.get('REDIS_PREFIX', '')
 
 
 class LeaderStorage(StorageProvider):
@@ -58,6 +59,11 @@ class LeaderStorage(StorageProvider):
         self._client: Optional[redis.Redis] = None
         self._connected = False
         self._lock = threading.Lock()
+
+        # Meta events consumer for real-time updates
+        self._meta_consumer: Optional[MetaConsumer] = None
+        self._video_cache: dict = {}
+        self._cache_dirty = True
 
         # Callbacks
         self._on_ready_callbacks: List[Callable[[], None]] = []
@@ -150,6 +156,17 @@ class LeaderStorage(StorageProvider):
 
                 print(f"[LeaderStorage] Connected to Redis at {url}")
 
+                # Start meta events consumer for real-time updates
+                try:
+                    self._meta_consumer = MetaConsumer(self._client, self._prefix)
+                    self._meta_consumer.on_change(self._on_metadata_change)
+                    self._meta_consumer.start()
+                except Exception as e:
+                    print(f"[LeaderStorage] Warning: failed to start meta consumer: {e}")
+
+                # Mark cache as dirty
+                self._cache_dirty = True
+
                 # Notify ready
                 self._notify_ready()
 
@@ -165,6 +182,14 @@ class LeaderStorage(StorageProvider):
 
     def _disconnect_redis_unlocked(self) -> None:
         """Disconnect from Redis (without lock)."""
+        # Stop meta consumer
+        if self._meta_consumer:
+            try:
+                self._meta_consumer.stop()
+            except Exception:
+                pass
+            self._meta_consumer = None
+
         if self._client:
             try:
                 self._client.close()
@@ -172,6 +197,10 @@ class LeaderStorage(StorageProvider):
                 pass
             self._client = None
         self._connected = False
+
+        # Clear cache
+        self._video_cache.clear()
+        self._cache_dirty = True
 
     def _notify_ready(self) -> None:
         """Notify ready callbacks."""
@@ -188,6 +217,22 @@ class LeaderStorage(StorageProvider):
                 callback()
             except Exception as e:
                 print(f"[LeaderStorage] Error in disconnect callback: {e}")
+
+    def _on_metadata_change(self, key: str, event_type: str) -> None:
+        """Handle metadata change events from meta:events stream."""
+        # Extract hash_id from key: file:midhash256:abc123/tmdb -> midhash256:abc123
+        if not key.startswith("file:"):
+            return
+
+        # Remove "file:" prefix and get the hash part (before /)
+        parts = key[5:].split("/")
+        if len(parts) >= 1:
+            hash_id = parts[0]
+
+            # Invalidate cache for this file
+            self._video_cache.pop(hash_id, None)
+            self._cache_dirty = True
+            print(f"[LeaderStorage] Metadata updated: {hash_id} ({event_type})")
 
     # ========================================================================
     # Event Registration
@@ -209,9 +254,23 @@ class LeaderStorage(StorageProvider):
     # Key Schema Helpers
     # ========================================================================
 
-    def _get_file_key(self, hash_id: str) -> str:
-        """Get the Redis key for a file hash."""
-        return f"{self._prefix}file:{hash_id}"
+    def _get_file_key_prefix(self, hash_id: str) -> str:
+        """Get the Redis key prefix for a file's flat keys."""
+        return f"{self._prefix}file:{hash_id}/"
+
+    def _get_file_metadata(self, hash_id: str) -> dict:
+        """Get all metadata for a file using flat key scan."""
+        prefix = self._get_file_key_prefix(hash_id)
+        data = {}
+
+        for key in self._client.scan_iter(f"{prefix}*", count=100):
+            key_str = key if isinstance(key, str) else key.decode()
+            field = key_str[len(prefix):]
+            value = self._client.get(key)
+            if value:
+                data[field] = value if isinstance(value, str) else value.decode()
+
+        return data
 
     def _resolve_path(self, path: str) -> str:
         """Resolve path by prepending FILES_PATH if needed."""
@@ -406,22 +465,23 @@ class LeaderStorage(StorageProvider):
             return []
 
         videos = []
-        pattern = f"{self._prefix}file:*"
 
         try:
-            for key in self._client.scan_iter(pattern, count=100):
-                # Skip index key
-                if '__index__' in key:
-                    continue
+            # Get all hash IDs from index
+            index_key = f"{self._prefix}file:__index__"
+            hash_ids = self._client.smembers(index_key)
+
+            for hash_id in hash_ids:
+                hash_id_str = hash_id if isinstance(hash_id, str) else hash_id.decode()
+
+                # Get all metadata for this file
+                data = self._get_file_metadata(hash_id_str)
 
                 # Check file type - only include video files
-                file_type = self._client.hget(key, 'fileType')
-                if file_type != 'video':
+                if not data or data.get('fileType') != 'video':
                     continue
 
-                hash_id = key.replace(f"{self._prefix}file:", "")
-                data = self._client.hgetall(key)
-                video = self._parse_video(hash_id, data)
+                video = self._parse_video(hash_id_str, data)
                 if video and video.file_path:
                     videos.append(video)
 
@@ -438,9 +498,8 @@ class LeaderStorage(StorageProvider):
             return None
 
         try:
-            key = self._get_file_key(hash_id)
-            data = self._client.hgetall(key)
-            return self._parse_video(hash_id, data)
+            data = self._get_file_metadata(hash_id)
+            return self._parse_video(hash_id, data) if data else None
         except Exception as e:
             print(f"[LeaderStorage] Error getting video {hash_id}: {e}")
             return None
@@ -470,18 +529,19 @@ class LeaderStorage(StorageProvider):
             imdb_id = f"tt{imdb_id}"
 
         try:
-            # Scan all videos looking for matching IMDB ID
-            pattern = f"{self._prefix}file:*"
-            for key in self._client.scan_iter(pattern, count=100):
-                if '__index__' in key:
-                    continue
+            # Get from index and check each file's imdbid
+            index_key = f"{self._prefix}file:__index__"
+            for hash_id in self._client.smembers(index_key):
+                hash_id_str = hash_id if isinstance(hash_id, str) else hash_id.decode()
+                prefix = self._get_file_key_prefix(hash_id_str)
 
-                # Check imdbid/imdbId field
-                stored_imdb = self._client.hget(key, 'imdbid') or self._client.hget(key, 'imdbId')
-                if stored_imdb and stored_imdb.lower() == imdb_id:
-                    hash_id = key.replace(f"{self._prefix}file:", "")
-                    data = self._client.hgetall(key)
-                    return self._parse_video(hash_id, data)
+                # Check imdbid field directly
+                stored_imdb = self._client.get(f"{prefix}imdbid") or self._client.get(f"{prefix}imdbId")
+                if stored_imdb:
+                    stored_imdb_str = stored_imdb if isinstance(stored_imdb, str) else stored_imdb.decode()
+                    if stored_imdb_str.lower() == imdb_id:
+                        data = self._get_file_metadata(hash_id_str)
+                        return self._parse_video(hash_id_str, data)
 
         except Exception as e:
             print(f"[LeaderStorage] Error finding video by IMDB ID {imdb_id}: {e}")
@@ -492,7 +552,7 @@ class LeaderStorage(StorageProvider):
         """
         Get the file path for a file by its CID.
 
-        Looks up file:{cid} in Redis and returns the path.
+        Looks up file:{cid}/* in Redis and returns the path.
         Tries 'path' field first, then falls back to 'filePath'.
         This works for any file including poster images.
 
@@ -502,18 +562,19 @@ class LeaderStorage(StorageProvider):
             return None
 
         try:
-            key = self._get_file_key(cid)
+            prefix = self._get_file_key_prefix(cid)
             # Try 'path' field first (relative path)
-            path = self._client.hget(key, 'path')
+            path = self._client.get(f"{prefix}path")
             if path:
-                return path
+                return path if isinstance(path, str) else path.decode()
             # Fall back to 'filePath' (full path from meta-sort)
-            file_path = self._client.hget(key, 'filePath')
+            file_path = self._client.get(f"{prefix}filePath")
             if file_path:
+                file_path_str = file_path if isinstance(file_path, str) else file_path.decode()
                 # Convert absolute path to relative by removing /files/ prefix
-                if file_path.startswith('/files/'):
-                    return file_path[7:]  # Remove '/files/'
-                return file_path
+                if file_path_str.startswith('/files/'):
+                    return file_path_str[7:]  # Remove '/files/'
+                return file_path_str
             return None
         except Exception as e:
             print(f"[LeaderStorage] Error getting path for CID {cid}: {e}")
@@ -525,19 +586,9 @@ class LeaderStorage(StorageProvider):
             return 0
 
         try:
-            # Try index first
+            # Use index set for accurate count
             index_key = f"{self._prefix}file:__index__"
-            count = self._client.scard(index_key)
-            if count > 0:
-                return count
-
-            # Fallback to scanning
-            pattern = f"{self._prefix}file:*"
-            count = 0
-            for key in self._client.scan_iter(pattern, count=100):
-                if '__index__' not in key:
-                    count += 1
-            return count
+            return self._client.scard(index_key)
 
         except Exception as e:
             print(f"[LeaderStorage] Error counting videos: {e}")

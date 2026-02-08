@@ -20,7 +20,7 @@ services:
       - CACHE_DIR=/data/cache
       - STORAGE_MODE=${STORAGE_MODE:-leader}
       - REDIS_URL=${REDIS_URL:-redis://redis:6379}
-      - REDIS_PREFIX=${REDIS_PREFIX:-meta-sort:}
+      - REDIS_PREFIX=${REDIS_PREFIX:-}
       - SEGMENT_DURATION=${SEGMENT_DURATION:-4}
       - PREFETCH_SEGMENTS=${PREFETCH_SEGMENTS:-4}
       - SCHEME=${SCHEME:-auto}

@@ -36,7 +36,6 @@ import stremio
 import transcoder
 from storage import init_service_discovery, get_service_discovery
 import fileserver
-import plugin_subscriber
 import webdav_client
 
 # Configuration
@@ -237,13 +236,6 @@ class Handler(BaseHTTPRequestHandler):
         # Discovered services (for inter-service navigation)
         if path == '/api/services':
             return self.handle_services_api()
-
-        # Plugin subscriber status
-        if path == '/api/plugin-subscriber':
-            subscriber = plugin_subscriber.get_subscriber()
-            if subscriber:
-                return self.send_json(subscriber.get_status())
-            return self.send_json({'running': False, 'reason': 'Not initialized'})
 
         # === File API ===
         # /file/{cid} or /poster/{cid} (backward compat) - serve file by CID
@@ -880,12 +872,6 @@ def shutdown_handler(signum, frame):
     """Handle graceful shutdown."""
     print("\n[Server] Shutting down...")
 
-    # Stop plugin subscriber
-    try:
-        plugin_subscriber.stop_subscriber()
-    except Exception as e:
-        print(f"[Server] Error stopping plugin subscriber: {e}")
-
     # Stop service discovery
     try:
         sd = get_service_discovery()
@@ -909,10 +895,6 @@ def main():
     # Initialize fileserver with storage reference
     fileserver.init(storage)
 
-    # Initialize plugin subscriber to receive notifications when
-    # filename-parser and tmdb plugins complete
-    subscriber = plugin_subscriber.init_subscriber()
-
     print(f"Meta-Stremio starting on port {PORT}")
     print(f"Storage: {storage_type} | Videos: {video_count}")
     print(f"Media: {transcoder.MEDIA_DIR} | Cache: {transcoder.CACHE_DIR}")
@@ -925,11 +907,6 @@ def main():
         print(f"Service discovery: enabled (registered as meta-stremio)")
     else:
         print(f"Service discovery: disabled (META_CORE_PATH not found)")
-
-    if subscriber:
-        print(f"Plugin subscriber: enabled (watching: filename-parser, tmdb)")
-    else:
-        print(f"Plugin subscriber: disabled (Redis not available)")
 
     ThreadedServer(('0.0.0.0', PORT), Handler).serve_forever()
 

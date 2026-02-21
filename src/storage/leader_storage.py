@@ -3,12 +3,18 @@ Leader-aware Storage Provider for meta-stremio.
 
 Uses LeaderClient to read leader info from meta-core.
 Handles reconnection when the leader changes or becomes unavailable.
+
+Features:
+- Waits for meta-core leader before accepting requests
+- Automatic reconnection on leader change or failure
+- Configurable startup timeout via LEADER_WAIT_TIMEOUT env var
 """
 from __future__ import annotations
 
 import os
 import json
 import threading
+import time
 from typing import List, Optional, Callable
 
 from .provider import StorageProvider, VideoMetadata
@@ -30,6 +36,13 @@ except ImportError:
 META_CORE_PATH = os.environ.get('META_CORE_PATH', '/meta-core')
 FILES_PATH = os.environ.get('FILES_PATH', '/files')
 REDIS_PREFIX = os.environ.get('REDIS_PREFIX', '')
+
+# Leader wait timeout: how long to wait for leader on startup (in seconds)
+# 0 = wait forever (default), >0 = timeout after N seconds
+LEADER_WAIT_TIMEOUT = int(os.environ.get('LEADER_WAIT_TIMEOUT', '0'))
+
+# Retry interval for leader connection attempts (in seconds)
+LEADER_RETRY_INTERVAL = int(os.environ.get('LEADER_RETRY_INTERVAL', '5'))
 
 
 class LeaderStorage(StorageProvider):
@@ -70,7 +83,12 @@ class LeaderStorage(StorageProvider):
         self._on_disconnect_callbacks: List[Callable[[], None]] = []
 
     def connect(self) -> None:
-        """Connect to the storage backend via leader client."""
+        """Connect to the storage backend via leader client.
+
+        This method blocks until a leader is found and connection is established.
+        If LEADER_WAIT_TIMEOUT > 0, it will timeout after that many seconds.
+        If LEADER_WAIT_TIMEOUT == 0 (default), it will wait forever.
+        """
         # If direct URL provided, skip leader discovery
         if self._override_url:
             print(f"[LeaderStorage] Using direct Redis URL: {self._override_url}")
@@ -85,24 +103,108 @@ class LeaderStorage(StorageProvider):
         # Set up change callback
         self._leader_client.on_change(self._on_leader_change)
 
-        # Wait for leader and connect
-        try:
-            info = self._leader_client.wait_for_leader(30000)
-            print(f"[LeaderStorage] Connecting to leader at {info.redis_url}...")
-            self._connect_to_redis(info.redis_url)
+        # Wait for leader with retry loop
+        start_time = time.time()
+        attempt = 0
 
-            # Configure WebDAV client with leader's WebDAV URL
-            if info.webdav_url:
-                webdav_client.configure(info.webdav_url)
-        except TimeoutError as e:
-            print(f"[LeaderStorage] Failed to find leader: {e}")
-            return
+        while True:
+            attempt += 1
+            elapsed = time.time() - start_time
 
-        # Start watching for leader changes
-        self._leader_client.start_watching()
+            # Check timeout (0 = no timeout)
+            if LEADER_WAIT_TIMEOUT > 0 and elapsed > LEADER_WAIT_TIMEOUT:
+                print(f"[LeaderStorage] Timed out waiting for leader after {LEADER_WAIT_TIMEOUT}s")
+                # Start background reconnection thread
+                self._start_background_reconnection()
+                return
+
+            try:
+                # Try to get leader info (short timeout per attempt)
+                info = self._leader_client.get_leader_info()
+
+                if info and info.redis_url:
+                    print(f"[LeaderStorage] Found leader at {info.redis_url} (attempt {attempt})")
+                    self._connect_to_redis(info.redis_url)
+
+                    if self._connected:
+                        # Configure WebDAV client with leader's internal WebDAV URL (for container-to-container access)
+                        if info.webdav_url_internal:
+                            webdav_client.configure(info.webdav_url_internal)
+                            print(f"[LeaderStorage] WebDAV configured: {info.webdav_url_internal}")
+                        elif info.webdav_url:
+                            # Fallback to external URL if internal not available
+                            webdav_client.configure(info.webdav_url)
+                            print(f"[LeaderStorage] WebDAV configured (fallback): {info.webdav_url}")
+
+                        # Start watching for leader changes
+                        self._leader_client.start_watching()
+                        return
+                    else:
+                        print(f"[LeaderStorage] Failed to connect to Redis, retrying...")
+                else:
+                    print(f"[LeaderStorage] Waiting for meta-core leader... (attempt {attempt})")
+
+            except Exception as e:
+                print(f"[LeaderStorage] Error during leader discovery: {e}")
+
+            # Wait before retry
+            time.sleep(LEADER_RETRY_INTERVAL)
+
+    def _start_background_reconnection(self) -> None:
+        """Start a background thread that keeps trying to connect to the leader."""
+        if hasattr(self, '_reconnect_thread') and self._reconnect_thread and self._reconnect_thread.is_alive():
+            return  # Already running
+
+        print("[LeaderStorage] Starting background reconnection thread...")
+        self._reconnect_stop = threading.Event()
+        self._reconnect_thread = threading.Thread(
+            target=self._background_reconnect_loop,
+            daemon=True,
+            name="leader-reconnect"
+        )
+        self._reconnect_thread.start()
+
+    def _background_reconnect_loop(self) -> None:
+        """Background thread that keeps trying to connect to the leader."""
+        attempt = 0
+
+        while not self._reconnect_stop.is_set():
+            attempt += 1
+
+            try:
+                info = self._leader_client.get_leader_info()
+
+                if info and info.redis_url:
+                    print(f"[LeaderStorage] Background: Found leader at {info.redis_url}")
+                    self._connect_to_redis(info.redis_url)
+
+                    if self._connected:
+                        # Configure WebDAV client
+                        if info.webdav_url_internal:
+                            webdav_client.configure(info.webdav_url_internal)
+                        elif info.webdav_url:
+                            webdav_client.configure(info.webdav_url)
+
+                        # Start watching for leader changes
+                        self._leader_client.start_watching()
+                        print("[LeaderStorage] Background: Successfully connected to leader!")
+                        return  # Exit the reconnection loop
+
+            except Exception as e:
+                print(f"[LeaderStorage] Background reconnect error: {e}")
+
+            # Wait before retry
+            self._reconnect_stop.wait(LEADER_RETRY_INTERVAL)
 
     def disconnect(self) -> None:
         """Disconnect from the storage backend."""
+        # Stop background reconnection thread if running
+        if hasattr(self, '_reconnect_stop') and self._reconnect_stop:
+            self._reconnect_stop.set()
+        if hasattr(self, '_reconnect_thread') and self._reconnect_thread:
+            self._reconnect_thread.join(timeout=2.0)
+            self._reconnect_thread = None
+
         # Stop leader client
         if self._leader_client:
             self._leader_client.close()
@@ -129,18 +231,34 @@ class LeaderStorage(StorageProvider):
         self._disconnect_redis()
         self._notify_disconnect()
 
-        # Reconnect to new leader
+        # Reconnect to new leader using retry loop
         if self._leader_client:
-            try:
-                info = self._leader_client.wait_for_leader(30000)
-                print(f"[LeaderStorage] Reconnecting to leader at {info.redis_url}...")
-                self._connect_to_redis(info.redis_url)
+            attempt = 0
+            max_attempts = 60  # Try for ~5 minutes with 5s interval
 
-                # Reconfigure WebDAV client with new leader's WebDAV URL
-                if info.webdav_url:
-                    webdav_client.configure(info.webdav_url)
-            except TimeoutError as e:
-                print(f"[LeaderStorage] Failed to reconnect: {e}")
+            while attempt < max_attempts:
+                attempt += 1
+                try:
+                    info = self._leader_client.get_leader_info()
+
+                    if info and info.redis_url:
+                        print(f"[LeaderStorage] Reconnecting to leader at {info.redis_url}...")
+                        self._connect_to_redis(info.redis_url)
+
+                        if self._connected:
+                            # Reconfigure WebDAV client with new leader's internal WebDAV URL
+                            if info.webdav_url_internal:
+                                webdav_client.configure(info.webdav_url_internal)
+                            elif info.webdav_url:
+                                # Fallback to external URL if internal not available
+                                webdav_client.configure(info.webdav_url)
+                            return
+                except Exception as e:
+                    print(f"[LeaderStorage] Reconnect attempt {attempt} failed: {e}")
+
+                time.sleep(LEADER_RETRY_INTERVAL)
+
+            print(f"[LeaderStorage] Failed to reconnect after {max_attempts} attempts")
 
     def _connect_to_redis(self, url: str) -> None:
         """Connect to Redis."""
@@ -606,6 +724,7 @@ class LeaderStorage(StorageProvider):
                     'api_url': info.api_url,
                     'redis_url': info.redis_url,
                     'webdav_url': info.webdav_url,
+                    'webdav_url_internal': info.webdav_url_internal,
                 }
 
         status = {

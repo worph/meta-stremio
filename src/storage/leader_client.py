@@ -40,7 +40,8 @@ class LeaderLockInfo:
     base_url: str
     api_url: str      # meta-core API URL (port 9000)
     redis_url: str
-    webdav_url: str
+    webdav_url: str           # External WebDAV URL (via nginx/HTTPS)
+    webdav_url_internal: str  # Internal WebDAV URL (direct to port 9000)
     timestamp: int
     pid: int
 
@@ -52,7 +53,8 @@ class URLsResponse:
     base_url: str
     api_url: str
     redis_url: str
-    webdav_url: str
+    webdav_url: str           # External WebDAV URL (via nginx/HTTPS)
+    webdav_url_internal: str  # Internal WebDAV URL (direct to port 9000)
     is_leader: bool
 
 
@@ -141,6 +143,7 @@ class LeaderClient:
                     api_url=data.get('apiUrl', ''),
                     redis_url=data.get('redisUrl', ''),
                     webdav_url=data.get('webdavUrl', ''),
+                    webdav_url_internal=data.get('webdavUrlInternal', ''),
                     is_leader=data.get('isLeader', False)
                 )
                 self._urls_cache_time = now
@@ -174,6 +177,7 @@ class LeaderClient:
                 api_url=urls.api_url,
                 redis_url=urls.redis_url,
                 webdav_url=urls.webdav_url,
+                webdav_url_internal=urls.webdav_url_internal,
                 timestamp=int(time.time() * 1000),
                 pid=0  # Unknown for remote leader
             )
@@ -190,9 +194,16 @@ class LeaderClient:
         return info.redis_url if info else None
 
     def get_webdav_url(self) -> Optional[str]:
-        """Get WebDAV URL from leader info."""
+        """Get WebDAV URL from leader info (external, via nginx/HTTPS)."""
         info = self.get_leader_info()
         return info.webdav_url if info else None
+
+    def get_webdav_url_internal(self) -> Optional[str]:
+        """Get internal WebDAV URL from leader info (direct to port 9000).
+        Use this for container-to-container communication.
+        """
+        info = self.get_leader_info()
+        return info.webdav_url_internal if info else None
 
     def get_api_url(self) -> Optional[str]:
         """Get meta-core API URL from leader info."""

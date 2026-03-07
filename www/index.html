@@ -552,8 +552,9 @@
             'meta-sort': '📁',
             'meta-fuse': '🗂️',
             'meta-stremio': '🎬',
-            'meta-orbit': '🌐',
             'meta-core': '⚙️',
+            'meta-dup': '🔍',
+            'meta-orbit': '🌐',
             'default': '📦'
         };
 
@@ -577,10 +578,10 @@
                         const activeClass = isActive ? ' active' : '';
 
                         // Use external URL for other services, current path for self
-                        const href = isActive ? '#' : svc.url;
+                        const href = isActive ? '#' : svc.baseUrl;
 
                         return `
-                            <a href="${href}" class="service-link${activeClass}" onclick="event.preventDefault(); ${isActive ? '' : `window.location.href='${svc.url}'`}">
+                            <a href="${href}" class="service-link${activeClass}" onclick="event.preventDefault(); ${isActive ? '' : `window.location.href='${svc.baseUrl}'`}">
                                 <span class="service-icon">${icon}</span>
                                 <span>${formatServiceName(svc.name)}</span>
                                 <span class="service-status"></span>

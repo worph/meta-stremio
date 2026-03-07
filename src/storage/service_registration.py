@@ -1,14 +1,14 @@
 """
-Service Discovery for meta-stremio.
+Service Registration for meta-stremio.
 
-Python implementation of the service discovery pattern used in meta-sort/meta-fuse.
-Each service registers itself in /meta-core/services/{service-name}-{hostname}.json
-and can discover other registered services.
+Python implementation of the service registration pattern used in meta-sort/meta-fuse.
+Each service registers itself in /meta-core/services/{service-name}-{hostname}.json.
+
+Service discovery is centralized in meta-core - this module only handles registration.
+For service discovery, use the /api/services endpoint (fetches from meta-core).
 
 Features:
 - Service registration with heartbeat
-- Discovery of all running services
-- Stale service detection (60 second threshold)
 - Automatic heartbeat loop
 """
 from __future__ import annotations
@@ -62,7 +62,7 @@ class ServiceInfo:
         return {k: v for k, v in result.items() if v is not None}
 
 
-class ServiceDiscovery:
+class ServiceRegistration:
     """
     Service Discovery using shared filesystem.
 
@@ -144,7 +144,7 @@ class ServiceDiscovery:
         with open(self.service_file_path, 'w') as f:
             json.dump(info.to_dict(), f, indent=2)
 
-        print(f'[ServiceDiscovery] Registered {self.service_name}')
+        print(f'[ServiceRegistration] Registered {self.service_name}')
 
     def update_status(self, status: str) -> None:
         """Update service status."""
@@ -159,7 +159,7 @@ class ServiceDiscovery:
                 json.dump(info, f, indent=2)
 
         except Exception as e:
-            print(f'[ServiceDiscovery] Failed to update status: {e}')
+            print(f'[ServiceRegistration] Failed to update status: {e}')
 
     def heartbeat(self) -> None:
         """Send heartbeat (update lastHeartbeat timestamp)."""
@@ -177,7 +177,7 @@ class ServiceDiscovery:
             self.register()
             self.update_status('running')
         except Exception as e:
-            print(f'[ServiceDiscovery] Heartbeat failed: {e}')
+            print(f'[ServiceRegistration] Heartbeat failed: {e}')
 
     def _heartbeat_loop(self) -> None:
         """Background heartbeat loop."""
@@ -185,7 +185,7 @@ class ServiceDiscovery:
             try:
                 self.heartbeat()
             except Exception as e:
-                print(f'[ServiceDiscovery] Heartbeat error: {e}')
+                print(f'[ServiceRegistration] Heartbeat error: {e}')
 
             self._stop_event.wait(self.heartbeat_interval)
 
@@ -214,135 +214,9 @@ class ServiceDiscovery:
 
         try:
             self.update_status('stopped')
-            print(f'[ServiceDiscovery] Unregistered {self.service_name}')
+            print(f'[ServiceRegistration] Unregistered {self.service_name}')
         except Exception as e:
-            print(f'[ServiceDiscovery] Failed to unregister: {e}')
-
-    # ========================================================================
-    # Discovery Methods
-    # ========================================================================
-
-    def _is_service_stale(self, info: dict) -> bool:
-        """Check if a service is stale based on lastHeartbeat."""
-        try:
-            last_heartbeat_str = info.get('lastHeartbeat', '')
-            if not last_heartbeat_str:
-                return True
-
-            # Parse ISO timestamp
-            last_heartbeat_str = last_heartbeat_str.rstrip('Z')
-            last_heartbeat = datetime.fromisoformat(last_heartbeat_str)
-            age = (datetime.utcnow() - last_heartbeat).total_seconds()
-
-            return age > self.stale_threshold
-        except Exception:
-            return True
-
-    def discover_service(self, name: str) -> Optional[dict]:
-        """
-        Discover a service by name.
-        Looks for files matching pattern: {name}-*.json (hostname-based naming)
-        Falls back to exact match {name}.json for backwards compatibility.
-        """
-        try:
-            if not os.path.exists(self.services_dir):
-                return None
-
-            # First try exact match for backward compatibility
-            exact_path = os.path.join(self.services_dir, f'{name}.json')
-            if os.path.exists(exact_path):
-                with open(exact_path, 'r') as f:
-                    info = json.load(f)
-                if not self._is_service_stale(info) and info.get('status') == 'running':
-                    return info
-
-            # Search for hostname-based files: name-*.json
-            for filename in os.listdir(self.services_dir):
-                if filename.startswith(f'{name}-') and filename.endswith('.json'):
-                    filepath = os.path.join(self.services_dir, filename)
-                    with open(filepath, 'r') as f:
-                        info = json.load(f)
-                    if not self._is_service_stale(info) and info.get('status') == 'running':
-                        return info
-
-            return None
-
-        except Exception as e:
-            print(f'[ServiceDiscovery] Error discovering {name}: {e}')
-            return None
-
-    def discover_all_services(self) -> List[dict]:
-        """Discover all registered services."""
-        services = []
-        seen_names = set()
-        meta_core_instances = []  # Collect all meta-core instances to pick leader
-
-        try:
-            if not os.path.exists(self.services_dir):
-                return services
-
-            for filename in os.listdir(self.services_dir):
-                if not filename.endswith('.json'):
-                    continue
-
-                filepath = os.path.join(self.services_dir, filename)
-                try:
-                    with open(filepath, 'r') as f:
-                        info = json.load(f)
-
-                    # Skip stale or non-running services
-                    if self._is_service_stale(info):
-                        continue
-                    if info.get('status') != 'running':
-                        continue
-
-                    name = info.get('name', '')
-
-                    # Special handling for meta-core: collect all instances
-                    # to pick the leader later (filesystem order is unreliable)
-                    if name == 'meta-core':
-                        meta_core_instances.append(info)
-                        continue
-
-                    # Deduplicate by service name (keep first found)
-                    if name and name not in seen_names:
-                        seen_names.add(name)
-                        services.append(info)
-
-                except Exception as e:
-                    print(f'[ServiceDiscovery] Failed to read {filename}: {e}')
-
-            # Add meta-core: prefer leader, fallback to first instance
-            if meta_core_instances:
-                leader = next(
-                    (s for s in meta_core_instances if s.get('role') == 'leader'),
-                    meta_core_instances[0]  # Fallback if no leader found
-                )
-                services.append(leader)
-
-        except Exception as e:
-            print(f'[ServiceDiscovery] Error discovering services: {e}')
-
-        return services
-
-    def is_service_healthy(self, name: str) -> bool:
-        """Check if a service is healthy via HTTP ping."""
-        service = self.discover_service(name)
-        if not service:
-            return False
-
-        # Use baseUrl (new format) or api (legacy format)
-        base_url = service.get('baseUrl', '') or service.get('api', '')
-        if not base_url:
-            return False
-
-        url = f"{base_url}/health"
-
-        try:
-            with urlopen(url, timeout=5) as response:
-                return response.status == 200
-        except Exception:
-            return False
+            print(f'[ServiceRegistration] Failed to unregister: {e}')
 
     # ========================================================================
     # Lifecycle
@@ -362,12 +236,12 @@ class ServiceDiscovery:
                 self.register()
                 self.update_status('running')
                 self.start_heartbeat()
-                print(f'[ServiceDiscovery] Started {self.service_name}-{self.current_hostname} at {self.base_url}')
+                print(f'[ServiceRegistration] Started {self.service_name}-{self.current_hostname} at {self.base_url}')
             except Exception as e:
-                print(f'[ServiceDiscovery] Registration failed (read-only?): {e}')
-                print(f'[ServiceDiscovery] Running in discovery-only mode')
+                print(f'[ServiceRegistration] Registration failed (read-only?): {e}')
+                print(f'[ServiceRegistration] Running in discovery-only mode')
         else:
-            print(f'[ServiceDiscovery] Services directory not writable, running in discovery-only mode')
+            print(f'[ServiceRegistration] Services directory not writable, running in discovery-only mode')
 
         self._is_started = True
 
@@ -394,24 +268,30 @@ class ServiceDiscovery:
 
 
 # Singleton instance
-_service_discovery: Optional[ServiceDiscovery] = None
+_service_registration: Optional[ServiceRegistration] = None
 
 
-def get_service_discovery() -> ServiceDiscovery:
-    """Get or create the service discovery singleton."""
-    global _service_discovery
-    if _service_discovery is None:
-        _service_discovery = ServiceDiscovery()
-    return _service_discovery
+def get_service_discovery() -> ServiceRegistration:
+    """Get or create the service registration singleton.
+
+    Note: Function name kept as 'get_service_discovery' for backward compatibility.
+    """
+    global _service_registration
+    if _service_registration is None:
+        _service_registration = ServiceRegistration()
+    return _service_registration
 
 
 def init_service_discovery(
     api_url: str = None,
     base_url: str = None,
     **kwargs
-) -> ServiceDiscovery:
-    """Initialize and start the service discovery singleton."""
-    global _service_discovery
-    _service_discovery = ServiceDiscovery(api_url=api_url, base_url=base_url, **kwargs)
-    _service_discovery.start()
-    return _service_discovery
+) -> ServiceRegistration:
+    """Initialize and start the service registration singleton.
+
+    Note: Function name kept as 'init_service_discovery' for backward compatibility.
+    """
+    global _service_registration
+    _service_registration = ServiceRegistration(api_url=api_url, base_url=base_url, **kwargs)
+    _service_registration.start()
+    return _service_registration

@@ -304,3 +304,20 @@ class LeaderClient:
         self._stop_event.set()
         self.stop_watching()
         self._on_change_callbacks = []
+
+
+# Singleton instance
+_leader_client: Optional[LeaderClient] = None
+
+
+def get_leader_client() -> Optional[LeaderClient]:
+    """Get or create the LeaderClient singleton.
+
+    Returns None if META_CORE_PATH is not set.
+    """
+    global _leader_client
+    if _leader_client is None:
+        meta_core_path = os.environ.get('META_CORE_PATH', '/meta-core')
+        meta_core_url = os.environ.get('META_CORE_URL')
+        _leader_client = LeaderClient(meta_core_path, meta_core_url)
+    return _leader_client

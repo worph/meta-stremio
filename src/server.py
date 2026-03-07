@@ -569,59 +569,35 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(content.encode('utf-8'))
 
     def handle_services_api(self):
-        """Return list of discovered services for dashboard navigation."""
-        services = []
-        leader_info = None
+        """Return list of discovered services for dashboard navigation.
+
+        Fetches services from meta-core (single source of truth) instead of
+        doing local filesystem-based discovery.
+        """
+        from storage.leader_client import get_leader_client
+        from urllib.request import urlopen
+        from urllib.error import URLError
 
         try:
-            sd = get_service_discovery()
-            if sd and sd.is_started():
-                all_services = sd.discover_all_services()
+            leader_client = get_leader_client()
+            leader_info = leader_client.get_leader_info() if leader_client else None
 
-                for svc in all_services:
-                    # Filter out follower meta-core instances (only show leader)
-                    svc_name = svc.get('name', '')
-                    svc_role = svc.get('role', '')
-                    if svc_name == 'meta-core' and svc_role != 'leader':
-                        continue
-
-                    # Build dashboard URL from base URL (supports both 'baseUrl' and legacy 'api')
-                    api_url = svc.get('baseUrl', '') or svc.get('api', '')
-                    dashboard_path = svc.get('endpoints', {}).get('dashboard', '/')
-
-                    services.append({
-                        'name': svc_name or 'Unknown',
-                        'url': api_url + dashboard_path if api_url else '',
-                        'api': api_url,
-                        'status': svc.get('status', 'unknown'),
-                        'capabilities': svc.get('capabilities', []),
-                        'version': svc.get('version', ''),
-                        'role': svc_role or None,
-                    })
+            if leader_info and leader_info.api_url:
+                # Fetch services from meta-core API
+                url = f"{leader_info.api_url}/services?current=meta-stremio"
+                with urlopen(url, timeout=5) as response:
+                    data = json.loads(response.read().decode())
+                    return self.send_json(data)
+        except URLError as e:
+            print(f"[Server] Error fetching services from meta-core: {e}")
         except Exception as e:
-            print(f"[Server] Error discovering services: {e}")
+            print(f"[Server] Error in handle_services_api: {e}")
 
-        # Get leader info from leader storage
-        try:
-            storage = stremio.get_storage()
-            if storage and hasattr(storage, '_leader_discovery'):
-                discovery = storage._leader_discovery
-                if discovery:
-                    info = discovery.get_leader_info()
-                    if info:
-                        leader_info = {
-                            'host': info.hostname if hasattr(info, 'hostname') else info.get('hostname', ''),
-                            'api': info.api_url if hasattr(info, 'api_url') else info.get('apiUrl', ''),
-                            'http': info.base_url if hasattr(info, 'base_url') else info.get('baseUrl', ''),
-                        }
-        except Exception as e:
-            print(f"[Server] Error getting leader info: {e}")
-
+        # Fallback: return empty list if meta-core is unavailable
         return self.send_json({
-            'services': services,
+            'services': [],
             'current': 'meta-stremio',
-            'leader': leader_info,
-            'isLeader': False,  # meta-stremio is never the leader
+            'count': 0,
         })
 
     def handle_file(self, cid: str, width: int = None):

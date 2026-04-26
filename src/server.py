@@ -28,6 +28,7 @@ import json
 import signal
 import sys
 import base64
+import hashlib
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, unquote
 import threading
@@ -43,6 +44,23 @@ PORT = int(os.environ.get('PORT', '7000'))
 SCHEME = os.environ.get('SCHEME', 'auto').lower().strip()
 META_CORE_PATH = os.environ.get('META_CORE_PATH', '/meta-core')
 BASE_URL = os.environ.get('BASE_URL', '')
+
+# Stremio addon path-token protection. When HASH_API_SEED is set, every addon
+# path (manifest, catalog, meta, stream, transcode, direct, file, poster) must
+# be prefixed with /s/<token>. Dashboard paths bypass this — Caddy + the
+# nginx-hash-lock sidecar gate those with OIDC, since browsers can carry
+# cookies but Stremio clients cannot.
+HASH_API_SEED = os.environ.get('HASH_API_SEED', '').strip()
+API_KEY = hashlib.sha256(HASH_API_SEED.encode()).hexdigest()[:16] if HASH_API_SEED else ''
+API_PREFIX = f'/s/{API_KEY}' if API_KEY else ''
+
+# Paths the addon serves for browsers, not Stremio clients. These are gated
+# upstream by hash-lock/OIDC instead of the path-token.
+DASHBOARD_PATHS = frozenset({
+    '/', '/index.html', '/configure', '/health',
+    '/api/stats', '/api/library', '/api/services', '/api/languages',
+    '/transcode/metrics',
+})
 
 # Initialize storage
 storage = stremio.init_storage()
@@ -133,9 +151,31 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header('Access-Control-Allow-Headers', 'Content-Type, Range')
         self.end_headers()
 
+    def strip_api_prefix(self, path: str) -> str | None:
+        """Remove the /s/<token> prefix from addon paths.
+
+        Returns the de-prefixed path, or None when the token is missing/wrong
+        (caller should send 401). Dashboard paths are returned untouched —
+        they are protected by hash-lock/OIDC upstream, not by the token.
+        """
+        if not API_KEY:
+            return path
+        if path in DASHBOARD_PATHS:
+            return path
+        if path.startswith(API_PREFIX + '/'):
+            return path[len(API_PREFIX):]
+        if path == API_PREFIX:
+            return '/'
+        return None
+
     def do_HEAD(self):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
+
+        path = self.strip_api_prefix(path)
+        if path is None:
+            self.send_error(401, "Unauthorized")
+            return
 
         if path.startswith('/stremio/') or path == '/' or path.startswith('/manifest.json'):
             self.send_response(200)
@@ -181,6 +221,11 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         path = unquote(parsed.path)
 
+        path = self.strip_api_prefix(path)
+        if path is None:
+            self.send_error(401, "Unauthorized")
+            return
+
         # Reset metrics
         if path == '/transcode/reset-metrics':
             transcoder.reset_metrics()
@@ -192,8 +237,16 @@ class Handler(BaseHTTPRequestHandler):
         parsed = urlparse(self.path)
         raw_path = unquote(parsed.path)
 
+        # Strip path-token (when HASH_API_SEED is set) before any further
+        # parsing; the existing base64-config-in-path scheme then runs on the
+        # tail, so URLs look like /s/<token>/<configB64>/manifest.json.
+        stripped = self.strip_api_prefix(raw_path)
+        if stripped is None:
+            self.send_error(401, "Unauthorized")
+            return
+
         # Parse config from path (e.g., /eyJsYW5n.../manifest.json)
-        path, config = parse_config_from_path(raw_path)
+        path, config = parse_config_from_path(stripped)
 
         # Root - serve setup page
         if path == '/' or path == '/index.html':
@@ -325,11 +378,14 @@ class Handler(BaseHTTPRequestHandler):
         if os.path.exists(html_path):
             with open(html_path, 'r', encoding='utf-8') as f:
                 content = f.read()
+            prefix_script = f'<script>window.API_PREFIX = "{API_PREFIX}";</script>'
+            content = content.replace('</head>', f'{prefix_script}\n</head>', 1)
+            encoded = content.encode('utf-8')
             self.send_response(200)
             self.send_header('Content-Type', 'text/html')
-            self.send_header('Content-Length', len(content.encode('utf-8')))
+            self.send_header('Content-Length', len(encoded))
             self.end_headers()
-            self.wfile.write(content.encode('utf-8'))
+            self.wfile.write(encoded)
         else:
             # Fallback minimal page
             content = f"""<!DOCTYPE html>
@@ -338,7 +394,7 @@ class Handler(BaseHTTPRequestHandler):
 <body style="font-family: sans-serif; background: #1a1a2e; color: #fff; padding: 2rem;">
 <h1>Meta-Stremio</h1>
 <p>Install URL: <code>{self.get_base_url()}/manifest.json</code></p>
-<p><a href="stremio://{self.headers.get('Host', 'localhost')}/manifest.json" style="color: #4dabf7;">Install in Stremio</a></p>
+<p><a href="stremio://{self.headers.get('Host', 'localhost')}{API_PREFIX}/manifest.json" style="color: #4dabf7;">Install in Stremio</a></p>
 </body>
 </html>"""
             self.send_response(200)
@@ -364,6 +420,7 @@ class Handler(BaseHTTPRequestHandler):
             # Inline configure page (fallback)
             base_url = self.get_base_url()
             host = self.headers.get('Host', 'localhost')
+            api_prefix = API_PREFIX
             languages = stremio.get_supported_languages()
 
             lang_options = '\n'.join(
@@ -508,6 +565,7 @@ class Handler(BaseHTTPRequestHandler):
     <script>
         const baseUrl = '{base_url}';
         const host = '{host}';
+        const apiPrefix = '{api_prefix}';
 
         function encodeConfig(config) {{
             const json = JSON.stringify(config);
@@ -523,12 +581,12 @@ class Handler(BaseHTTPRequestHandler):
             if (displayLang === 'en') {{
                 // No config needed for default
                 url = baseUrl + '/manifest.json';
-                stremioUrl = 'stremio://' + host + '/manifest.json';
+                stremioUrl = 'stremio://' + host + apiPrefix + '/manifest.json';
             }} else {{
                 const config = {{ displayLanguage: displayLang }};
                 const encoded = encodeConfig(config);
                 url = baseUrl + '/' + encoded + '/manifest.json';
-                stremioUrl = 'stremio://' + host + '/' + encoded + '/manifest.json';
+                stremioUrl = 'stremio://' + host + apiPrefix + '/' + encoded + '/manifest.json';
             }}
 
             document.getElementById('installUrl').textContent = url;
@@ -827,7 +885,7 @@ class Handler(BaseHTTPRequestHandler):
             proto = 'http' if is_localhost else 'https'
 
         clean_host = host.replace(':80', '').replace(':443', '')
-        return f"{proto}://{clean_host}"
+        return f"{proto}://{clean_host}{API_PREFIX}"
 
 
 class ThreadedServer(HTTPServer):
@@ -875,8 +933,12 @@ def main():
     print(f"Storage: {storage_type} | Videos: {video_count}")
     print(f"Media: {transcoder.MEDIA_DIR} | Cache: {transcoder.CACHE_DIR}")
     print(f"Segment: {transcoder.SEGMENT_DURATION}s | Prefetch: {transcoder.PREFETCH_SEGMENTS} segments")
-    print(f"Manifest URL: http://localhost:{PORT}/manifest.json")
+    print(f"Manifest URL: http://localhost:{PORT}{API_PREFIX}/manifest.json")
     print(f"Dashboard: http://localhost:{PORT}/")
+    if API_KEY:
+        print(f"Path-token protection: enabled (prefix: {API_PREFIX})")
+    else:
+        print("Path-token protection: disabled (set HASH_API_SEED to enable)")
     print("Adaptive quality: target 60-80% transcode ratio")
 
     if service_discovery:

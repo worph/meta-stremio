@@ -477,11 +477,12 @@
 
     <script>
         const baseUrl = window.location.origin;
-        const manifestUrl = `${baseUrl}/manifest.json`;
+        const apiPrefix = window.API_PREFIX || '';
+        const manifestUrl = `${baseUrl}${apiPrefix}/manifest.json`;
 
         // Set URLs
         document.getElementById('manifestUrl').textContent = manifestUrl;
-        document.getElementById('installLink').href = `stremio://${window.location.host}/manifest.json`;
+        document.getElementById('installLink').href = `stremio://${window.location.host}${apiPrefix}/manifest.json`;
 
         function copyUrl() {
             navigator.clipboard.writeText(manifestUrl).then(() => {

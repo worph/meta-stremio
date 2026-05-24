@@ -139,13 +139,19 @@ class LeaderClient:
 
                 # api-mediated-access PR D: redisUrl is no longer published by
                 # meta-core. If it shows up, an old build snuck back in —
-                # log a warning so it surfaces in the operator's face.
+                # fail loudly so the rollback can't go unnoticed. Set
+                # ALLOW_LEGACY_REDIS_URL=1 to downgrade to a warning during
+                # a deliberate temporary rollback.
                 if data.get('redisUrl'):
-                    print(
-                        "[LeaderClient] WARNING: meta-core still publishes redisUrl; "
+                    msg = (
+                        "[LeaderClient] meta-core still publishes redisUrl; "
                         "direct Redis access was retired by the api-mediated-access "
                         "lockdown. Verify meta-core version."
                     )
+                    if os.environ.get("ALLOW_LEGACY_REDIS_URL") == "1":
+                        print("WARNING: " + msg)
+                    else:
+                        raise RuntimeError(msg)
                 self._cached_urls = URLsResponse(
                     hostname=data.get('hostname', ''),
                     base_url=data.get('baseUrl', ''),

@@ -20,6 +20,7 @@ from typing import List, Optional, Callable
 from .provider import StorageProvider, VideoMetadata
 from .leader_client import LeaderClient, LeaderLockInfo
 from .meta_consumer import MetaConsumer
+from .meta_core_api_client import MetaCoreApiClient
 
 # Import webdav_client to configure it after leader discovery
 import webdav_client
@@ -70,6 +71,7 @@ class LeaderStorage(StorageProvider):
 
         self._leader_client: Optional[LeaderClient] = None
         self._client: Optional[redis.Redis] = None
+        self._api_client: Optional[MetaCoreApiClient] = None
         self._connected = False
         self._lock = threading.Lock()
 
@@ -122,23 +124,14 @@ class LeaderStorage(StorageProvider):
                 # Try to get leader info (short timeout per attempt)
                 info = self._leader_client.get_leader_info()
 
-                # api-mediated-access PR D: redis_url may be empty when
-                # meta-core no longer advertises it. Synthesise from the
-                # hostname in that case so meta-stremio's read paths still
-                # work until they're migrated to HTTP. The synthesised URL
-                # assumes the docker-network `meta-core` alias or the
-                # canonical hostname is reachable on port 6379.
-                redis_url = info.redis_url if info else None
-                if info and not redis_url and info.hostname:
-                    redis_url = f"redis://{info.hostname}:6379"
-                    print(
-                        "[LeaderStorage] redis_url absent in leader info; "
-                        f"falling back to {redis_url}"
-                    )
-
-                if info and redis_url:
-                    print(f"[LeaderStorage] Found leader at {redis_url} (attempt {attempt})")
-                    self._connect_to_redis(redis_url)
+                # api-mediated-access PR D: when redis_url is absent, run in
+                # HTTP-only mode against meta-core's /meta/* surface. Redis
+                # access has been retired; the API client covers every read
+                # this storage provider needs. Only fall back to Redis when
+                # both redis_url and api_url are present (transition state).
+                if info and info.api_url:
+                    print(f"[LeaderStorage] Found leader at {info.api_url} (attempt {attempt})")
+                    self._connect_via_api(info)
 
                     if self._connected:
                         # Configure WebDAV client with leader's internal WebDAV URL (for container-to-container access)
@@ -154,7 +147,7 @@ class LeaderStorage(StorageProvider):
                         self._leader_client.start_watching()
                         return
                     else:
-                        print(f"[LeaderStorage] Failed to connect to Redis, retrying...")
+                        print(f"[LeaderStorage] Failed to connect to meta-core, retrying...")
                 else:
                     print(f"[LeaderStorage] Waiting for meta-core leader... (attempt {attempt})")
 
@@ -188,9 +181,9 @@ class LeaderStorage(StorageProvider):
             try:
                 info = self._leader_client.get_leader_info()
 
-                if info and info.redis_url:
-                    print(f"[LeaderStorage] Background: Found leader at {info.redis_url}")
-                    self._connect_to_redis(info.redis_url)
+                if info and info.api_url:
+                    print(f"[LeaderStorage] Background: Found leader at {info.api_url}")
+                    self._connect_via_api(info)
 
                     if self._connected:
                         # Configure WebDAV client
@@ -228,9 +221,18 @@ class LeaderStorage(StorageProvider):
         self._disconnect_redis()
 
     def is_connected(self) -> bool:
-        """Check if connected to the storage backend."""
+        """Check if connected to the storage backend (Redis or HTTP API)."""
         with self._lock:
-            if not self._connected or not self._client:
+            if not self._connected:
+                return False
+            # HTTP-only mode: probe meta-core's /health.
+            if self._api_client is not None and self._client is None:
+                if self._api_client.health():
+                    return True
+                self._connected = False
+                return False
+            # Legacy Redis mode.
+            if not self._client:
                 return False
             try:
                 self._client.ping()
@@ -255,9 +257,9 @@ class LeaderStorage(StorageProvider):
                 try:
                     info = self._leader_client.get_leader_info()
 
-                    if info and info.redis_url:
-                        print(f"[LeaderStorage] Reconnecting to leader at {info.redis_url}...")
-                        self._connect_to_redis(info.redis_url)
+                    if info and info.api_url:
+                        print(f"[LeaderStorage] Reconnecting to leader at {info.api_url}...")
+                        self._connect_via_api(info)
 
                         if self._connected:
                             # Reconfigure WebDAV client with new leader's internal WebDAV URL
@@ -274,8 +276,46 @@ class LeaderStorage(StorageProvider):
 
             print(f"[LeaderStorage] Failed to reconnect after {max_attempts} attempts")
 
+    def _connect_via_api(self, info: LeaderLockInfo) -> None:
+        """Connect to meta-core via its HTTP API. The api_client covers every
+        read this storage provider does — Redis access is no longer required
+        (api-mediated-access PR D). Also starts the SSE meta-events consumer
+        so cache invalidation still flows in real time.
+        """
+        with self._lock:
+            try:
+                # Drop any prior state (Redis or otherwise)
+                self._disconnect_redis_unlocked()
+
+                # Set up the HTTP read client + probe meta-core.
+                api = MetaCoreApiClient(api_url=info.api_url)
+                if not api.health():
+                    raise RuntimeError(f"meta-core health probe failed at {info.api_url}")
+                self._api_client = api
+                self._connected = True
+
+                print(f"[LeaderStorage] Connected via meta-core API at {info.api_url}")
+
+                # Start SSE consumer for cache invalidation.
+                try:
+                    self._meta_consumer = MetaConsumer(api_url=info.api_url)
+                    self._meta_consumer.on_change(self._on_metadata_change)
+                    self._meta_consumer.start()
+                except Exception as e:
+                    print(f"[LeaderStorage] Warning: failed to start meta consumer: {e}")
+
+                self._cache_dirty = True
+                self._notify_ready()
+
+            except Exception as e:
+                print(f"[LeaderStorage] Failed to connect via API: {e}")
+                self._api_client = None
+                self._connected = False
+
     def _connect_to_redis(self, url: str) -> None:
-        """Connect to Redis."""
+        """Connect to Redis. Legacy path — kept for direct REDIS_URL overrides
+        and ad-hoc tests. Production discovery goes through _connect_via_api.
+        """
         with self._lock:
             try:
                 # Disconnect existing client
@@ -321,7 +361,7 @@ class LeaderStorage(StorageProvider):
             self._disconnect_redis_unlocked()
 
     def _disconnect_redis_unlocked(self) -> None:
-        """Disconnect from Redis (without lock)."""
+        """Disconnect from Redis and/or API (without lock)."""
         # Stop meta consumer
         if self._meta_consumer:
             try:
@@ -336,6 +376,10 @@ class LeaderStorage(StorageProvider):
             except Exception:
                 pass
             self._client = None
+
+        # The API client has no socket; just drop the reference.
+        self._api_client = None
+
         self._connected = False
 
         # Clear cache
@@ -399,10 +443,14 @@ class LeaderStorage(StorageProvider):
         return f"{self._prefix}file:{hash_id}/"
 
     def _get_file_metadata(self, hash_id: str) -> dict:
-        """Get all metadata for a file using flat key scan."""
+        """Get all metadata for a file. Uses meta-core HTTP API when in
+        HTTP-only mode; falls back to Redis SCAN+GET otherwise."""
+        if self._api_client is not None:
+            flat = self._api_client.get_metadata_flat(hash_id)
+            return dict(flat) if flat else {}
+
         prefix = self._get_file_key_prefix(hash_id)
         data = {}
-
         for key in self._client.scan_iter(f"{prefix}*", count=100):
             key_str = key if isinstance(key, str) else key.decode()
             field = key_str[len(prefix):]
@@ -599,6 +647,15 @@ class LeaderStorage(StorageProvider):
     # StorageProvider Interface
     # ========================================================================
 
+    def _list_hash_ids(self) -> List[str]:
+        """Enumerate every hashId. HTTP API in api-mediated mode, SMEMBERS
+        on file:__index__ in legacy Redis mode."""
+        if self._api_client is not None:
+            return self._api_client.list_hash_ids()
+        index_key = f"{self._prefix}file:__index__"
+        ids = self._client.smembers(index_key)
+        return [h if isinstance(h, str) else h.decode() for h in ids]
+
     def get_all_videos(self) -> List[VideoMetadata]:
         """Get all videos from storage."""
         if not self.is_connected():
@@ -608,8 +665,7 @@ class LeaderStorage(StorageProvider):
 
         try:
             # Get all hash IDs from index
-            index_key = f"{self._prefix}file:__index__"
-            hash_ids = self._client.smembers(index_key)
+            hash_ids = self._list_hash_ids()
 
             for hash_id in hash_ids:
                 hash_id_str = hash_id if isinstance(hash_id, str) else hash_id.decode()
@@ -670,31 +726,39 @@ class LeaderStorage(StorageProvider):
 
         try:
             # Get from index and check each file's imdbid
-            index_key = f"{self._prefix}file:__index__"
-            for hash_id in self._client.smembers(index_key):
-                hash_id_str = hash_id if isinstance(hash_id, str) else hash_id.decode()
-                prefix = self._get_file_key_prefix(hash_id_str)
-
-                # Check imdbid field directly
-                stored_imdb = self._client.get(f"{prefix}imdbid") or self._client.get(f"{prefix}imdbId")
-                if stored_imdb:
-                    stored_imdb_str = stored_imdb if isinstance(stored_imdb, str) else stored_imdb.decode()
-                    if stored_imdb_str.lower() == imdb_id:
-                        data = self._get_file_metadata(hash_id_str)
-                        return self._parse_video(hash_id_str, data)
+            for hash_id_str in self._list_hash_ids():
+                stored_imdb = self._get_imdb_field(hash_id_str)
+                if stored_imdb and stored_imdb.lower() == imdb_id:
+                    data = self._get_file_metadata(hash_id_str)
+                    return self._parse_video(hash_id_str, data)
 
         except Exception as e:
             print(f"[LeaderStorage] Error finding video by IMDB ID {imdb_id}: {e}")
 
         return None
 
+    def _get_imdb_field(self, hash_id: str) -> Optional[str]:
+        """Read imdbid (or imdbId) for a file. HTTP API when in api-mediated
+        mode, direct Redis GET otherwise."""
+        if self._api_client is not None:
+            v = self._api_client.get_property(hash_id, "imdbid")
+            if v:
+                return v
+            return self._api_client.get_property(hash_id, "imdbId")
+        prefix = self._get_file_key_prefix(hash_id)
+        stored_imdb = self._client.get(f"{prefix}imdbid") or self._client.get(f"{prefix}imdbId")
+        if not stored_imdb:
+            return None
+        return stored_imdb if isinstance(stored_imdb, str) else stored_imdb.decode()
+
     def get_file_path_by_cid(self, cid: str) -> Optional[str]:
         """
         Get the file path for a file by its CID.
 
-        Looks up file:{cid}/* in Redis and returns the path.
-        Tries 'path' field first, then falls back to 'filePath'.
-        This works for any file including poster images.
+        In api-mediated mode this hits meta-core's GET /api/file/{cid}/info
+        which already does the reverse-index lookup + canonical-path
+        resolution. In Redis mode we fall back to reading file:{cid}/path
+        and file:{cid}/filePath directly.
 
         Returns the relative path if found, None otherwise.
         """
@@ -702,6 +766,11 @@ class LeaderStorage(StorageProvider):
             return None
 
         try:
+            if self._api_client is not None:
+                # /api/file/{cid}/info already returns a path relative to
+                # FILES_PATH, normalised. No further trimming required.
+                return self._api_client.resolve_file_path(cid)
+
             prefix = self._get_file_key_prefix(cid)
             # Try 'path' field first (relative path)
             path = self._client.get(f"{prefix}path")
@@ -726,6 +795,8 @@ class LeaderStorage(StorageProvider):
             return 0
 
         try:
+            if self._api_client is not None:
+                return self._api_client.count_hash_ids()
             # Use index set for accurate count
             index_key = f"{self._prefix}file:__index__"
             return self._client.scard(index_key)
@@ -762,8 +833,11 @@ class LeaderStorage(StorageProvider):
         if status['connected']:
             try:
                 status['video_count'] = self.get_video_count()
-                info = self._client.info('memory')
-                status['memory_used'] = info.get('used_memory_human', 'N/A')
+                # Memory stats only available in Redis-direct mode; the HTTP
+                # API doesn't surface them. Skip cleanly when unavailable.
+                if self._client is not None:
+                    mem = self._client.info('memory')
+                    status['memory_used'] = mem.get('used_memory_human', 'N/A')
             except Exception:
                 pass
 

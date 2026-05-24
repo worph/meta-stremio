@@ -137,6 +137,15 @@ class LeaderClient:
 
                 data = json.loads(response.read().decode())
 
+                # api-mediated-access PR D: redisUrl is no longer published by
+                # meta-core. If it shows up, an old build snuck back in —
+                # log a warning so it surfaces in the operator's face.
+                if data.get('redisUrl'):
+                    print(
+                        "[LeaderClient] WARNING: meta-core still publishes redisUrl; "
+                        "direct Redis access was retired by the api-mediated-access "
+                        "lockdown. Verify meta-core version."
+                    )
                 self._cached_urls = URLsResponse(
                     hostname=data.get('hostname', ''),
                     base_url=data.get('baseUrl', ''),

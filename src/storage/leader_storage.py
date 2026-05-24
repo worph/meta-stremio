@@ -122,9 +122,23 @@ class LeaderStorage(StorageProvider):
                 # Try to get leader info (short timeout per attempt)
                 info = self._leader_client.get_leader_info()
 
-                if info and info.redis_url:
-                    print(f"[LeaderStorage] Found leader at {info.redis_url} (attempt {attempt})")
-                    self._connect_to_redis(info.redis_url)
+                # api-mediated-access PR D: redis_url may be empty when
+                # meta-core no longer advertises it. Synthesise from the
+                # hostname in that case so meta-stremio's read paths still
+                # work until they're migrated to HTTP. The synthesised URL
+                # assumes the docker-network `meta-core` alias or the
+                # canonical hostname is reachable on port 6379.
+                redis_url = info.redis_url if info else None
+                if info and not redis_url and info.hostname:
+                    redis_url = f"redis://{info.hostname}:6379"
+                    print(
+                        "[LeaderStorage] redis_url absent in leader info; "
+                        f"falling back to {redis_url}"
+                    )
+
+                if info and redis_url:
+                    print(f"[LeaderStorage] Found leader at {redis_url} (attempt {attempt})")
+                    self._connect_to_redis(redis_url)
 
                     if self._connected:
                         # Configure WebDAV client with leader's internal WebDAV URL (for container-to-container access)
@@ -274,11 +288,19 @@ class LeaderStorage(StorageProvider):
 
                 print(f"[LeaderStorage] Connected to Redis at {url}")
 
-                # Start meta events consumer for real-time updates
+                # Start meta events consumer (HTTP SSE against meta-core).
+                # Prefer the api URL we discovered via the LeaderClient; fall
+                # back to META_CORE_URL env so STORAGE_MODE=direct deployments
+                # (no leader discovery) still get live updates.
                 try:
-                    self._meta_consumer = MetaConsumer(self._client, self._prefix)
-                    self._meta_consumer.on_change(self._on_metadata_change)
-                    self._meta_consumer.start()
+                    info = self._leader_client.get_cached_leader_info() if self._leader_client else None
+                    api_url = (info.api_url if info else None) or os.environ.get("META_CORE_URL")
+                    if api_url:
+                        self._meta_consumer = MetaConsumer(api_url=api_url)
+                        self._meta_consumer.on_change(self._on_metadata_change)
+                        self._meta_consumer.start()
+                    else:
+                        print("[LeaderStorage] Warning: api_url unavailable; meta consumer not started")
                 except Exception as e:
                     print(f"[LeaderStorage] Warning: failed to start meta consumer: {e}")
 

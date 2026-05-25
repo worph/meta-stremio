@@ -221,17 +221,29 @@ class LeaderStorage(StorageProvider):
         self._disconnect_redis()
 
     def is_connected(self) -> bool:
-        """Check if connected to the storage backend (Redis or HTTP API)."""
+        """Check if connected to the storage backend (Redis or HTTP API).
+
+        HTTP-only mode auto-recovers from transient meta-core outages: if
+        the health probe fails we drop the connected flag but keep the
+        api_client so the *next* call probes again. The background
+        reconnect thread is only needed for Redis-mode where the
+        connection itself is sticky.
+        """
         with self._lock:
-            if not self._connected:
-                return False
-            # HTTP-only mode: probe meta-core's /health.
+            # HTTP-only mode: probe meta-core's /health on every call. This
+            # is cheap (a single HTTP GET) and naturally recovers when
+            # meta-core comes back without needing a separate reconnect
+            # loop. The api_client object stays valid through transient
+            # failures — it's stateless aside from the configured URL.
             if self._api_client is not None and self._client is None:
                 if self._api_client.health():
+                    self._connected = True
                     return True
                 self._connected = False
                 return False
             # Legacy Redis mode.
+            if not self._connected:
+                return False
             if not self._client:
                 return False
             try:

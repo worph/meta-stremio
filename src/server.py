@@ -35,7 +35,6 @@ import threading
 
 import stremio
 import transcoder
-from storage import init_service_discovery, get_service_discovery
 import fileserver
 import webdav_client
 
@@ -65,13 +64,16 @@ DASHBOARD_PATHS = frozenset({
 # Initialize storage
 storage = stremio.init_storage()
 
-# Initialize service discovery (only if META_CORE_PATH exists)
+# Service discovery is UDP now (meta-discovery v1), so there is no
+# META_CORE_PATH gate: the leader client's node announces this service on the
+# same multicast group it listens on. Being discoverable and discovering are
+# one thing. See docs/project-architecture/service-discovery.md.
 service_discovery = None
-if os.path.exists(META_CORE_PATH):
-    try:
-        service_discovery = init_service_discovery(base_url=BASE_URL if BASE_URL else None)
-    except Exception as e:
-        print(f"[Server] Service discovery init failed: {e}")
+try:
+    from storage.leader_client import get_leader_client
+    get_leader_client().start_watching()
+except Exception as e:
+    print(f"[Server] Service discovery init failed: {e}")
 
 # Global Stremio handler
 stremio_handler = stremio.StremioHandler()
@@ -627,35 +629,35 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(content.encode('utf-8'))
 
     def handle_services_api(self):
-        """Return list of discovered services for dashboard navigation.
+        """Neighbours for the dashboard nav, from this peer's own UDP map.
 
-        Fetches services from meta-core (single source of truth) instead of
-        doing local filesystem-based discovery.
+        No hop through meta-core any more: every service keeps its own
+        neighbour table, so the nav still renders when meta-core is down.
+        `services` is kept as an alias of `neighbors` so the existing
+        dashboards keep working during the UI migration.
         """
         from storage.leader_client import get_leader_client
-        from urllib.request import urlopen
-        from urllib.error import URLError
 
         try:
-            leader_client = get_leader_client()
-            leader_info = leader_client.get_leader_info() if leader_client else None
-
-            if leader_info and leader_info.api_url:
-                # Fetch services from meta-core API
-                url = f"{leader_info.api_url}/services?current=meta-stremio"
-                with urlopen(url, timeout=5) as response:
-                    data = json.loads(response.read().decode())
-                    return self.send_json(data)
-        except URLError as e:
-            print(f"[Server] Error fetching services from meta-core: {e}")
+            client = get_leader_client()
+            neighbors = client.neighbors() if client else []
+            return self.send_json({
+                'current': 'meta-stremio',
+                'enabled': True,
+                'count': len(neighbors),
+                'neighbors': neighbors,
+                'services': neighbors,
+                'self': client.self_announce() if client else None,
+            })
         except Exception as e:
             print(f"[Server] Error in handle_services_api: {e}")
 
-        # Fallback: return empty list if meta-core is unavailable
         return self.send_json({
-            'services': [],
             'current': 'meta-stremio',
+            'enabled': False,
             'count': 0,
+            'neighbors': [],
+            'services': [],
         })
 
     def handle_file(self, cid: str, width: int = None):
@@ -906,11 +908,14 @@ def shutdown_handler(signum, frame):
     """Handle graceful shutdown."""
     print("\n[Server] Shutting down...")
 
-    # Stop service discovery
+    # Stop service discovery. close() emits a final "stopping" announce so
+    # neighbours drop us immediately instead of waiting out the staleness
+    # window.
     try:
-        sd = get_service_discovery()
-        if sd:
-            sd.stop()
+        from storage.leader_client import get_leader_client
+        client = get_leader_client()
+        if client:
+            client.close()
     except Exception as e:
         print(f"[Server] Error stopping service discovery: {e}")
 

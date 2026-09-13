@@ -18,7 +18,7 @@ import time
 from typing import List, Optional, Callable
 
 from .provider import StorageProvider, VideoMetadata
-from .leader_client import LeaderClient, LeaderLockInfo
+from .leader_client import LeaderClient, LeaderLockInfo, get_leader_client
 from .meta_consumer import MetaConsumer
 from .meta_core_api_client import MetaCoreApiClient
 
@@ -97,10 +97,11 @@ class LeaderStorage(StorageProvider):
             self._connect_to_redis(self._override_url)
             return
 
-        # Use leader client
-        self._leader_client = LeaderClient(
-            meta_core_path=self._meta_core_path
-        )
+        # Use the process-wide leader client so meta-stremio holds ONE UDP
+        # discovery socket, shared with server.py's neighbours endpoint.
+        # META_CORE_URL, when set, pins meta-core and discovery never
+        # overrides it — see docs/project-architecture/service-discovery.md.
+        self._leader_client = get_leader_client()
 
         # Set up change callback
         self._leader_client.on_change(self._on_leader_change)

@@ -50,11 +50,19 @@ class MetaConsumer:
     def __init__(
         self,
         api_url: str,
-        cursor_path: str = "/meta-core/cursors/meta-stremio-meta.cursor",
+        cursor_path: Optional[str] = None,
         request_timeout: int = 35,
     ) -> None:
         self._api_url = api_url.rstrip("/")
-        self._cursor_path = cursor_path
+        # The SSE resume cursor used to default under /meta-core, which is not
+        # mounted any more (meta-discovery v1 removed the shared volume). It
+        # belongs with the rest of this service's local state: CACHE_FOLDER_PATH
+        # (/data/cache in the dev stack). Without a writable home the consumer
+        # silently replays from `$` on every restart.
+        self._cursor_path = cursor_path or os.path.join(
+            os.environ.get("CACHE_FOLDER_PATH", "/data/cache"),
+            "meta-stremio-meta.cursor",
+        )
         self._request_timeout = request_timeout
         self._running = False
         self._thread: Optional[threading.Thread] = None

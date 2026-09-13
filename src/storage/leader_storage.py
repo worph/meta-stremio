@@ -576,10 +576,9 @@ class LeaderStorage(StorageProvider):
         # Parse release date
         release_date = data.get('releasedate', data.get('releaseDate'))
 
-        # Parse episode title - try episodeTitle or extract from titles/eng
+        # Parse episode title. `titles/*` is the work's name set, never an
+        # episode title (METADATA_KEYS.md §3).
         episode_title = data.get('episodeTitle', data.get('episodeName'))
-        if not episode_title:
-            episode_title = data.get('titles/eng', data.get('titles/en'))
 
         # Parse tagline
         tagline = data.get('tagline')

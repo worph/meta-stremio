@@ -13,15 +13,6 @@ from .provider import StorageProvider, VideoMetadata
 from .redis_storage import RedisStorage
 from .leader_storage import LeaderStorage
 from .leader_client import LeaderClient, LeaderLockInfo, get_leader_client
-from .service_registration import (
-    ServiceRegistration,
-    ServiceInfo,
-    get_service_discovery,  # Kept for backward compatibility
-    init_service_discovery  # Kept for backward compatibility
-)
-
-# Backward compatibility alias
-ServiceDiscovery = ServiceRegistration
 
 __all__ = [
     'StorageProvider',
@@ -31,9 +22,4 @@ __all__ = [
     'LeaderClient',
     'LeaderLockInfo',
     'get_leader_client',
-    'ServiceRegistration',
-    'ServiceDiscovery',  # Backward compatibility alias
-    'ServiceInfo',
-    'get_service_discovery',
-    'init_service_discovery',
 ]

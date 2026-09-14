@@ -289,6 +289,9 @@ def get_leader_client() -> Optional[LeaderClient]:
         _leader_client = LeaderClient(
             meta_core_path=os.environ.get("META_CORE_PATH"),
             meta_core_url=os.environ.get("META_CORE_URL"),
-            base_url=os.environ.get("BASE_URL") or None,
+            # PUBLIC_URL (a browser-reachable debug-direct port) wins over
+            # BASE_URL (the Caddy URL), same ladder as meta-core. Announcing a
+            # Caddy URL on a stack with no Caddy puts a dead link in every menu.
+            base_url=os.environ.get("PUBLIC_URL") or os.environ.get("BASE_URL") or None,
         )
     return _leader_client

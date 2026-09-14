@@ -292,6 +292,14 @@
         footer a:hover { text-decoration: underline; }
 
         /* Services Navigation */
+        /* <meta-service-menu> is in shadow DOM and cannot read the vars
+           above; map this UI's palette onto the four tokens it does read. */
+        meta-service-menu {
+            --mm-nav-fg: var(--text-primary);
+            --mm-nav-bg: var(--bg-tertiary);
+            --mm-nav-border: var(--border-color);
+            --mm-nav-accent: var(--accent-primary);
+        }
         .services-nav {
             background: var(--bg-secondary);
             border-radius: 12px;
@@ -362,16 +370,13 @@
             .services-nav { flex-direction: column; align-items: flex-start; }
         }
     </style>
+    <script type="module" src="meta-service-menu.js"></script>
 </head>
 <body>
     <div class="container">
-        <!-- Services Navigation -->
-        <nav class="services-nav" id="servicesNav" style="display: none;">
-            <span class="services-nav-label">Services:</span>
-            <div class="services-nav-items" id="servicesNavItems">
-                <!-- Populated by JavaScript -->
-            </div>
-        </nav>
+        <!-- Neighbouring meta-* services (meta-discovery v1). The element
+             fetches /api/neighbors from this origin and renders a burger menu. -->
+        <meta-service-menu id="servicesNav" current="meta-stremio"></meta-service-menu>
 
         <header class="header">
             <div>
@@ -548,78 +553,18 @@
             }
         }
 
-        // Service icons mapping
-        const serviceIcons = {
-            'meta-sort': '📁',
-            'meta-fuse': '🗂️',
-            'meta-stremio': '🎬',
-            'meta-core': '⚙️',
-            'meta-dup': '🔍',
-            'meta-orbit': '🌐',
-            'default': '📦'
-        };
-
-        // Fetch and display discovered services
-        async function fetchServices() {
-            try {
-                const res = await fetch('/api/services');
-                const data = await res.json();
-
-                const navEl = document.getElementById('servicesNav');
-                const itemsEl = document.getElementById('servicesNavItems');
-
-                if (data.services && data.services.length > 0) {
-                    // Sort services by name
-                    const services = data.services.sort((a, b) => a.name.localeCompare(b.name));
-
-                    // Build navigation items
-                    itemsEl.innerHTML = services.map(svc => {
-                        const icon = serviceIcons[svc.name] || serviceIcons.default;
-                        const isActive = svc.name === data.current;
-                        const activeClass = isActive ? ' active' : '';
-
-                        // Use external URL for other services, current path for self
-                        const href = isActive ? '#' : svc.baseUrl;
-
-                        return `
-                            <a href="${href}" class="service-link${activeClass}" onclick="event.preventDefault(); ${isActive ? '' : `window.location.href='${svc.baseUrl}'`}">
-                                <span class="service-icon">${icon}</span>
-                                <span>${formatServiceName(svc.name)}</span>
-                                <span class="service-status"></span>
-                            </a>
-                        `;
-                    }).join('');
-
-                    navEl.style.display = 'flex';
-                } else {
-                    navEl.style.display = 'none';
-                }
-            } catch (e) {
-                console.error('Failed to fetch services:', e);
-                document.getElementById('servicesNav').style.display = 'none';
-            }
-        }
-
-        function formatServiceName(name) {
-            // Convert 'meta-stremio' to 'Meta Stremio'
-            return name.split('-').map(word =>
-                word.charAt(0).toUpperCase() + word.slice(1)
-            ).join(' ');
-        }
+        // Service nav is <meta-service-menu> now — no local icon map,
+        // name formatter or poller lives here any more.
 
         // Initial fetch
         fetchStats();
         fetchMetrics();
-        fetchServices();
 
         // Refresh metrics every 5 seconds
         setInterval(fetchMetrics, 5000);
 
         // Refresh stats every 30 seconds
         setInterval(fetchStats, 30000);
-
-        // Refresh services every 60 seconds
-        setInterval(fetchServices, 60000);
     </script>
 </body>
 </html>

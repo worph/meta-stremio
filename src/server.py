@@ -57,7 +57,9 @@ API_PREFIX = f'/s/{API_KEY}' if API_KEY else ''
 # upstream by hash-lock/OIDC instead of the path-token.
 DASHBOARD_PATHS = frozenset({
     '/', '/index.html', '/configure', '/health',
-    '/api/stats', '/api/library', '/api/services', '/api/languages',
+    '/api/stats', '/api/library', '/api/services', '/api/neighbors', '/api/languages',
+    # The dashboard's shared nav element, loaded as a module from index.html.
+    '/meta-service-menu.js',
     '/transcode/metrics',
 })
 
@@ -254,6 +256,13 @@ class Handler(BaseHTTPRequestHandler):
         if path == '/' or path == '/index.html':
             return self.serve_setup_page()
 
+        # The one static asset under www/ that the dashboard loads as a module:
+        # the shared <meta-service-menu> element. There is no generic static
+        # route here (index.html is string-injected on every request), so this
+        # is an explicit allowlist of one rather than an open file server.
+        if path == '/meta-service-menu.js':
+            return self.serve_www_asset('meta-service-menu.js', 'text/javascript')
+
         # Configure page
         if path == '/configure':
             return self.serve_configure_page()
@@ -289,7 +298,7 @@ class Handler(BaseHTTPRequestHandler):
             })
 
         # Discovered services (for inter-service navigation)
-        if path == '/api/services':
+        if path == '/api/services' or path == '/api/neighbors':
             return self.handle_services_api()
 
         # === File API ===
@@ -369,6 +378,22 @@ class Handler(BaseHTTPRequestHandler):
             return self.handle_subtitle_vtt(m.group(1), int(m.group(2)))
 
         self.send_error(404)
+
+    def serve_www_asset(self, name, content_type):
+        """Serve one named file from www/ verbatim (no template injection)."""
+        for base in (os.path.dirname(__file__), os.path.dirname(os.path.dirname(__file__))):
+            candidate = os.path.join(base, 'www', name)
+            if os.path.exists(candidate):
+                with open(candidate, 'rb') as f:
+                    body = f.read()
+                self.send_response(200)
+                self.send_header('Content-Type', content_type)
+                self.send_header('Content-Length', len(body))
+                self.end_headers()
+                self.wfile.write(body)
+                return
+        self.send_response(404)
+        self.end_headers()
 
     def serve_setup_page(self):
         """Serve the setup/dashboard page."""

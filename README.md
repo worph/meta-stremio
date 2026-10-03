@@ -1,6 +1,6 @@
 # Meta-Stremio
 
-Stremio addon for the MetaMesh stack. Reads file metadata from the shared KV store, reads files via WebDAV (or direct mount), and serves HLS with on-the-fly FFmpeg transcoding plus the standard Stremio addon protocol.
+Stremio addon for the MetaMesh stack. Reads file metadata from meta-core's HTTP API (no direct Redis access), reads files via meta-core's WebDAV (or a direct mount), and serves HLS with on-the-fly FFmpeg transcoding plus the standard Stremio addon protocol.
 
 External port in the dev stack: **8182** (auth-gated, via Caddy + nginx-hash-lock). Internal container port is `7000`. Debug-direct port (bypasses the perimeter): **18182**. Container name: `metastremio-app` (backend) / `metastremio` (hash-lock proxy).
 
@@ -18,8 +18,8 @@ External port in the dev stack: **8182** (auth-gated, via Caddy + nginx-hash-loc
 │         │                   │                   │                   │
 │         ▼                   ▼                   ▼                   │
 │  ┌─────────────────────────────────────────────────────┐           │
-│  │              Shared KV Store (Redis)                │           │
-│  │   meta-core is leader, exposes /urls + /meta APIs   │           │
+│  │     meta-core (owns Redis; /urls + /meta APIs)      │           │
+│  │   located over UDP multicast (meta-discovery v1)    │           │
 │  └─────────────────────────────────────────────────────┘           │
 │                             │                                       │
 │                             ▼                                       │
@@ -34,7 +34,8 @@ External port in the dev stack: **8182** (auth-gated, via Caddy + nginx-hash-loc
 - **HLS transcoding** — adaptive preset+CRF targeting a 60–80% transcode ratio, prefetch of N segments ahead, persistent segment cache.
 - **Stremio protocol** — manifest, catalog, meta, stream; one HLS stream per audio track; subtitles extracted to VTT.
 - **Direct file serving** — range-request capable, for clients that can play the source directly.
-- **Storage abstractions** — `LeaderStorage` (auto-discovers Redis via meta-core), `RedisStorage` (direct URL), `direct` mode (reads from meta-core's HTTP API + SSE meta-stream).
+- **meta-core over HTTP** — `LeaderStorage` locates meta-core via **meta-discovery v1** (UDP multicast `239.255.77.1:9399`; see [`service-discovery.md`](../../docs/project-architecture/service-discovery.md)) or a pinned `META_CORE_URL`, reads every record through meta-core's `/meta/*` API, and keeps its cache fresh from the SSE meta-stream. The WebDAV URL is taken from meta-core's announce/`/urls` — nothing is configured by hand and no `/meta-core` volume is mounted. (`RedisStorage` remains in `src/storage/` as a legacy, unused backend; meta-core no longer publishes a Redis URL.)
+- **Neighbour nav** — this service announces itself on the discovery group and serves its own neighbour map at `/api/neighbors` for the dashboard's shared `<meta-service-menu>`.
 - **Path-token gate for addon URLs** — when `HASH_API_SEED` is set, addon paths must be prefixed with `/s/<token>`. Dashboard/browser paths are protected separately by the upstream hash-lock + OIDC sidecar (Stremio clients can't carry cookies, so they get the path-token instead).
 - **Language-configurable manifest** — `displayLanguage` in the per-install config (base64-in-path) selects which `titles` translation meta-sort's TMDB plugin populated.
 
@@ -54,23 +55,17 @@ This brings up `metastremio-app` on port 18182 (debug-direct) and the auth-gated
 ```bash
 docker build -t meta-stremio packages/meta-stremio
 
-# Leader mode (auto-discover Redis via meta-core)
+# Against an existing meta-core (found over UDP on the same Docker network,
+# or pinned with META_CORE_URL)
 docker run -d \
   -p 8182:7000 \
   -v /path/to/media:/files:ro \
-  -v /path/to/meta-core:/meta-core \
-  meta-stremio
-
-# Direct Redis mode
-docker run -d \
-  -p 8182:7000 \
-  -v /path/to/media:/files:ro \
-  -e STORAGE_MODE=redis \
-  -e REDIS_URL=redis://your-redis:6379 \
+  -e STORAGE_MODE=direct \
+  -e META_CORE_URL=http://metacore-app:9000 \
   meta-stremio
 ```
 
-The container always listens on port `7000` internally — map it to whatever you want externally.
+The container always listens on port `7000` internally — map it to whatever you want externally. The image bundles a `meta-core` binary (copied from `ghcr.io/worph/meta-core`, overridable with `--build-arg META_CORE_IMAGE=…`): with the image default `STORAGE_MODE=leader`, `docker/start.sh` starts it as an in-container sidecar first; any other value (the dev stack and the CasaOS app use `direct`) skips it and uses an external meta-core. Published images: `ghcr.io/worph/meta-stremio` (semver tags from `v*` git tags; in this repo `:latest` follows `main` — see `.github/workflows/docker-publish.yml`); the CasaOS app is `MetaStremio` in [`MetaAppStore`](../MetaAppStore/Apps/MetaStremio/docker-compose.yml).
 
 ### Standalone (development)
 
@@ -78,7 +73,7 @@ The container always listens on port `7000` internally — map it to whatever yo
 # Requires Python 3.9+ and FFmpeg.
 pip install -r requirements.txt   # redis, watchdog, Pillow, requests
 cd src
-python server.py
+python server.py   # finds meta-core over UDP, or set META_CORE_URL=<meta-core API URL>
 ```
 
 ## Configuration
@@ -91,17 +86,19 @@ python server.py
 | `BASE_URL` | — | External URL emitted in manifests / poster URLs (e.g. `https://metastremio-dev.localhost:8182`). |
 | `MEDIA_DIR` | `/files/watch` | Media directory (consumed by `transcoder.py`). |
 | `CACHE_DIR` | `/data/cache` | Transcoded segment cache. |
-| `STORAGE_MODE` | `leader` | `leader`, `redis`, or `direct`. |
-| `META_CORE_PATH` | `/meta-core` | Shared meta-core volume; used by `LeaderClient` for `kv-leader.info`. |
-| `META_CORE_URL` | — | meta-core HTTP API (e.g. `http://metacore-app:9000`); required for `STORAGE_MODE=direct` since there is no leader file to read. |
-| `FILES_PATH` | `/files` | Files volume. |
-| `REDIS_URL` | `redis://localhost:6379` | Redis URL for `STORAGE_MODE=redis`. |
-| `REDIS_PREFIX` | `meta-sort:` | Redis key prefix. |
+| `PUBLIC_URL` | — | Browser-facing URL announced to neighbours (nav menu); wins over `BASE_URL` for the announce. |
+| `STORAGE_MODE` | `leader` (image) | Read only by `docker/start.sh`: `leader` starts the bundled meta-core sidecar in-container, anything else (e.g. `direct`) skips it. The Python server always uses `LeaderStorage`. |
+| `META_CORE_URL` | — | Pins meta-core's HTTP API (e.g. `http://metacore-app:9000`); when set, UDP discovery never overrides it. Unset → meta-core is located over UDP. |
+| `ENABLE_UDP_DISCOVERY` | `true` | meta-discovery v1 announce/listen. |
+| `LEADER_WAIT_TIMEOUT` | `0` | Seconds to wait for meta-core at startup (`0` = forever); on timeout, keeps retrying in the background. |
+| `LEADER_RETRY_INTERVAL` | `5` | Seconds between meta-core lookup attempts. |
+| `FILES_PATH` | `/files` | Files volume (local fallback when WebDAV is not configured). |
 | `SCHEME` | `auto` | URL scheme for generated URLs: `http`, `https`, or `auto`. |
 | `SEGMENT_DURATION` | `4` | HLS segment length (s). |
 | `PREFETCH_SEGMENTS` | `4` | Segments to prefetch ahead. |
-| `META_CORE_WEBDAV_URL` | — | When set, files are read over HTTP from meta-core's WebDAV instead of the filesystem (lets meta-stremio reach SMB / rclone mounts that only exist inside meta-core). |
 | `HASH_API_SEED` | — | When set, derives a 16-char path-token; all addon routes must be prefixed with `/s/<token>`. Dashboard routes bypass. |
+
+`META_CORE_PATH`, `REDIS_URL` and `REDIS_PREFIX` are still set by the Dockerfile but are vestigial: meta-core is no longer found through the `/meta-core` volume, and reads go over meta-core's HTTP API rather than Redis.
 
 ## API endpoints
 
@@ -116,8 +113,11 @@ All routes below are matched in `src/server.py`. When `HASH_API_SEED` is set, **
 | `/health` | GET | Liveness + storage status |
 | `/api/stats` | GET | Library statistics |
 | `/api/library` | GET | Full library list (videos + count) |
-| `/api/services` | GET | Discovered MetaMesh services (proxied from `meta-core /services`) |
+| `/api/neighbors` | GET | This peer's UDP neighbour map (meta-discovery v1) for the nav menu |
+| `/api/services` | GET | Alias of `/api/neighbors` (kept for older dashboards) |
 | `/api/languages` | GET | Languages selectable from the `/configure` page |
+| `/meta-service-menu.js` | GET | Shared `<meta-service-menu>` nav element loaded by the dashboard |
+| `/transcode/metrics` | GET | Transcoder metrics (also listed below; exempt from the path-token) |
 
 ### Stremio addon protocol
 
@@ -178,20 +178,22 @@ meta-stremio/
 │   └── storage/
 │       ├── __init__.py
 │       ├── provider.py                # StorageProvider + VideoMetadata abstract base
-│       ├── redis_storage.py           # Direct Redis backend
-│       ├── leader_storage.py          # Leader-aware Redis backend
-│       ├── leader_client.py           # Reads /meta-core/locks/kv-leader.info + calls meta-core /urls
+│       ├── leader_storage.py          # Storage backend in use: meta-core HTTP API + SSE cache invalidation
+│       ├── leader_client.py           # Locates meta-core (UDP or META_CORE_URL pin), exposes its /urls set
+│       ├── meshdisco.py               # meta-discovery v1 (Python port of the Go reference in meta-core)
 │       ├── meta_consumer.py           # SSE consumer from meta-core /meta stream
 │       ├── meta_core_api_client.py    # HTTP client for meta-core REST API
-│       └── service_registration.py    # Registers meta-stremio with meta-core /services
+│       └── redis_storage.py           # Legacy direct-Redis backend (unused)
 └── www/
     ├── index.html                     # Dashboard
-    └── configure.html                 # Language configuration page
+    └── meta-service-menu.js           # Shared nav element
 ```
+
+The `/configure` page is rendered inline by `server.py` (there is no `www/configure.html`).
 
 ## KV store schema
 
-meta-stremio reads from the per-file Redis hash `/file/{cid}` populated by meta-sort and its plugins. Field semantics (`videoType`, `originalTitle`, `titles`, `season`, `episode`, `movieYear`, `cid_*`, etc.) are documented in the repo-root [`METADATA_KEYS.md`](../../METADATA_KEYS.md) — that is the single source of truth, and matches the `@metazla/meta-interface` types.
+meta-stremio reads the per-file record `/file/{cid}` (via meta-core's API) populated by meta-sort and its plugins. Field semantics (`videoType`, `originalTitle`, `titles`, `season`, `episode`, `movieYear`, `cid_*`, etc.) are documented in the repo-root [`METADATA_KEYS.md`](../../METADATA_KEYS.md) — that is the single source of truth, and matches the `@metazla/meta-interface` types.
 
 ## Stream types
 
@@ -199,14 +201,15 @@ For each video, the addon advertises multiple streams:
 
 1. **Direct file** — original bytes, served via `/direct/...` with `Range` support. Best quality, may not play on every device.
 2. **HLS original** — transcoded at source resolution, H.264/AAC, one stream per audio track.
-3. **HLS ABR** — adaptive ladder. Quality presets are baked into `transcoder.py`.
+3. **HLS ABR** — adaptive ladder (rungs above the source height are skipped). Presets are baked into `transcoder.py`: video is x264 **CRF-based** (the adaptive controller shifts preset and CRF offset at runtime), audio is AAC 128 kbps stereo. `BANDWIDTH` is only the hint written to the master playlist.
 
-| Resolution | Video bitrate | Audio bitrate |
+| Rung | Base CRF | Master-playlist `BANDWIDTH` hint |
 |---|---|---|
-| 1080p | 5000 kbps | 192 kbps |
-| 720p  | 3000 kbps | 128 kbps |
-| 480p  | 1500 kbps | 128 kbps |
-| 360p  |  800 kbps |  96 kbps |
+| original | 23 | — |
+| 1080p | 23 | 4000 kbps |
+| 720p  | 24 | 2500 kbps |
+| 480p  | 25 | 1200 kbps |
+| 360p  | 26 |  800 kbps |
 
 ## Adding to Stremio
 
@@ -234,8 +237,9 @@ Container lifecycle: do **not** `docker restart metastremio-app` to apply config
 ## Related projects
 
 - **[meta-sort](../meta-sort)** — file indexer; writes the metadata meta-stremio reads.
-- **[meta-fuse](../meta-fuse)** — virtual filesystem; reads the same KV store.
-- **[meta-share](../meta-share)** — decentralised metadata sharing.
+- **[meta-core](../meta-core)** — owns Redis; the HTTP API + WebDAV meta-stremio reads from.
+- **[meta-fuse](../meta-fuse)** — virtual filesystem; reads the same records.
+- **[meta-watch](../meta-watch)** — browser video client for the meta-share network (server-side zero media work, unlike this addon's transcoder).
 
 ## License
 

@@ -66,7 +66,7 @@ DASHBOARD_PATHS = frozenset({
 # Initialize storage
 storage = stremio.init_storage()
 
-# Service discovery is UDP now (meta-discovery v1), so there is no
+# Service discovery is UDP now (beacon v2), so there is no
 # META_CORE_PATH gate: the leader client's node announces this service on the
 # same multicast group it listens on. Being discoverable and discovering are
 # one thing. See docs/project-architecture/service-discovery.md.
@@ -654,18 +654,25 @@ class Handler(BaseHTTPRequestHandler):
             self.wfile.write(content.encode('utf-8'))
 
     def handle_services_api(self):
-        """Neighbours for the dashboard nav, from this peer's own UDP map.
+        """Neighbours for the dashboard nav, from this peer's own beacon v2 view.
 
         No hop through meta-core any more: every service keeps its own
         neighbour table, so the nav still renders when meta-core is down.
-        `services` is kept as an alias of `neighbors` so the existing
-        dashboards keep working during the UI migration.
+        `?all=1` returns every instance, `?cap=<pattern>` filters by
+        capability (docs/project-architecture/beacon-v2.md). `services` is kept
+        as an alias of `neighbors` so the existing dashboards keep working.
         """
+        from urllib.parse import parse_qs, urlparse
+
         from storage.leader_client import get_leader_client
 
         try:
+            query = parse_qs(urlparse(self.path).query)
             client = get_leader_client()
-            neighbors = client.neighbors() if client else []
+            neighbors = client.neighbors(
+                all=bool(query.get('all')),
+                cap=(query.get('cap') or [None])[0],
+            ) if client else []
             return self.send_json({
                 'current': 'meta-stremio',
                 'enabled': True,

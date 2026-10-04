@@ -19,7 +19,7 @@ External port in the dev stack: **8182** (auth-gated, via Caddy + nginx-hash-loc
 │         ▼                   ▼                   ▼                   │
 │  ┌─────────────────────────────────────────────────────┐           │
 │  │     meta-core (owns Redis; /urls + /meta APIs)      │           │
-│  │   located over UDP multicast (meta-discovery v1)    │           │
+│  │   located over UDP multicast (beacon v2)    │           │
 │  └─────────────────────────────────────────────────────┘           │
 │                             │                                       │
 │                             ▼                                       │
@@ -34,7 +34,7 @@ External port in the dev stack: **8182** (auth-gated, via Caddy + nginx-hash-loc
 - **HLS transcoding** — adaptive preset+CRF targeting a 60–80% transcode ratio, prefetch of N segments ahead, persistent segment cache.
 - **Stremio protocol** — manifest, catalog, meta, stream; one HLS stream per audio track; subtitles extracted to VTT.
 - **Direct file serving** — range-request capable, for clients that can play the source directly.
-- **meta-core over HTTP** — `LeaderStorage` locates meta-core via **meta-discovery v1** (UDP multicast `239.255.77.1:9399`; see [`service-discovery.md`](../../docs/project-architecture/service-discovery.md)) or a pinned `META_CORE_URL`, reads every record through meta-core's `/meta/*` API, and keeps its cache fresh from the SSE meta-stream. The WebDAV URL is taken from meta-core's announce/`/urls` — nothing is configured by hand and no `/meta-core` volume is mounted. (`RedisStorage` remains in `src/storage/` as a legacy, unused backend; meta-core no longer publishes a Redis URL.)
+- **meta-core over HTTP** — `LeaderStorage` locates meta-core via **beacon v2** (UDP multicast `239.255.99.1:9099`; see [`beacon-v2.md`](../../docs/project-architecture/beacon-v2.md)) or a pinned `META_CORE_URL`, reads every record through meta-core's `/meta/*` API, and keeps its cache fresh from the SSE meta-stream. The WebDAV URL is taken from meta-core's announce/`/urls` — nothing is configured by hand and no `/meta-core` volume is mounted. (`RedisStorage` remains in `src/storage/` as a legacy, unused backend; meta-core no longer publishes a Redis URL.)
 - **Neighbour nav** — this service announces itself on the discovery group and serves its own neighbour map at `/api/neighbors` for the dashboard's shared `<meta-service-menu>`.
 - **Path-token gate for addon URLs** — when `HASH_API_SEED` is set, addon paths must be prefixed with `/s/<token>`. Dashboard/browser paths are protected separately by the upstream hash-lock + OIDC sidecar (Stremio clients can't carry cookies, so they get the path-token instead).
 - **Language-configurable manifest** — `displayLanguage` in the per-install config (base64-in-path) selects which `titles` translation meta-sort's TMDB plugin populated.
@@ -89,7 +89,7 @@ python server.py   # finds meta-core over UDP, or set META_CORE_URL=<meta-core A
 | `PUBLIC_URL` | — | Browser-facing URL announced to neighbours (nav menu); wins over `BASE_URL` for the announce. |
 | `STORAGE_MODE` | `leader` (image) | Read only by `docker/start.sh`: `leader` starts the bundled meta-core sidecar in-container, anything else (e.g. `direct`) skips it. The Python server always uses `LeaderStorage`. |
 | `META_CORE_URL` | — | Pins meta-core's HTTP API (e.g. `http://metacore-app:9000`); when set, UDP discovery never overrides it. Unset → meta-core is located over UDP. |
-| `ENABLE_UDP_DISCOVERY` | `true` | meta-discovery v1 announce/listen. |
+| `ENABLE_UDP_DISCOVERY` | `true` | beacon v2 announce/listen. |
 | `LEADER_WAIT_TIMEOUT` | `0` | Seconds to wait for meta-core at startup (`0` = forever); on timeout, keeps retrying in the background. |
 | `LEADER_RETRY_INTERVAL` | `5` | Seconds between meta-core lookup attempts. |
 | `FILES_PATH` | `/files` | Files volume (local fallback when WebDAV is not configured). |
@@ -113,7 +113,7 @@ All routes below are matched in `src/server.py`. When `HASH_API_SEED` is set, **
 | `/health` | GET | Liveness + storage status |
 | `/api/stats` | GET | Library statistics |
 | `/api/library` | GET | Full library list (videos + count) |
-| `/api/neighbors` | GET | This peer's UDP neighbour map (meta-discovery v1) for the nav menu |
+| `/api/neighbors` | GET | This peer's UDP neighbour map (beacon v2) for the nav menu |
 | `/api/services` | GET | Alias of `/api/neighbors` (kept for older dashboards) |
 | `/api/languages` | GET | Languages selectable from the `/configure` page |
 | `/meta-service-menu.js` | GET | Shared `<meta-service-menu>` nav element loaded by the dashboard |
@@ -180,7 +180,7 @@ meta-stremio/
 │       ├── provider.py                # StorageProvider + VideoMetadata abstract base
 │       ├── leader_storage.py          # Storage backend in use: meta-core HTTP API + SSE cache invalidation
 │       ├── leader_client.py           # Locates meta-core (UDP or META_CORE_URL pin), exposes its /urls set
-│       ├── meshdisco.py               # meta-discovery v1 (Python port of the Go reference in meta-core)
+│       ├── meshdisco.py               # beacon v2 (Python port of the Go reference in meta-core)
 │       ├── meta_consumer.py           # SSE consumer from meta-core /meta stream
 │       ├── meta_core_api_client.py    # HTTP client for meta-core REST API
 │       └── redis_storage.py           # Legacy direct-Redis backend (unused)

@@ -1,9 +1,9 @@
 """LeaderClient — locates meta-core and exposes its URLs.
 
-Since meta-discovery v1 this is a thin adapter over ``MetaCoreLocator``
-(``meshdisco.py``): meta-core is found by UDP announce instead of by reading
-``/meta-core/locks/kv-leader.info``, so meta-stremio no longer needs the
-``/meta-core`` volume mounted at all.
+Since UDP discovery (meta-discovery v1, now beacon v2) this is a thin adapter
+over ``MetaCoreLocator`` (``meshdisco.py``): meta-core is found by UDP advertise
+instead of by reading ``/meta-core/locks/kv-leader.info``, so meta-stremio no
+longer needs the ``/meta-core`` volume mounted at all.
 
 The public surface is deliberately unchanged so ``LeaderStorage`` did not have
 to move: ``get_leader_info``, ``get_urls``, ``get_api_url``,
@@ -263,10 +263,11 @@ class LeaderClient:
 
     # -- nav menu ----------------------------------------------------------
 
-    def neighbors(self) -> List[dict]:
-        """Neighbours for the nav menu (one row per service name)."""
+    def neighbors(self, all: bool = False, cap: Optional[str] = None) -> List[dict]:
+        """Neighbours for /api/neighbors: one row per name (every instance with
+        ``all``), optionally only nodes with a capability matching ``cap``."""
         self._ensure_started()
-        return self._locator.neighbors()
+        return self._locator.neighbors(all=all, cap=cap)
 
     def self_announce(self) -> dict:
         """This service's own announce, so the menu can show itself."""

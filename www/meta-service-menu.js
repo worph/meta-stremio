@@ -238,6 +238,10 @@ class MetaServiceMenu extends HTMLElement {
     for (const n of this._neighbors) {
       const name = n.name || "";
       if (!name || seen.has(name)) continue;
+      // Beacon v2 neighbours include plugins; the nav lists services only.
+      // (A row without `caps` comes from a pre-v2 backend — keep it.)
+      const isService = (c) => String(c).startsWith("metamesh.service/");
+      if (Array.isArray(n.caps) && !n.caps.some(isService)) continue;
       seen.add(name);
       rows.push(n);
     }
@@ -275,7 +279,7 @@ class MetaServiceMenu extends HTMLElement {
         el.href = url;
         el.setAttribute("role", "menuitem");
       }
-      if (!isActive && !url) el.title = "No reachable URL announced";
+      if (!isActive && !url) el.title = "No reachable URL advertised";
 
       const icon = document.createElement("span");
       icon.className = "icon";
@@ -285,7 +289,8 @@ class MetaServiceMenu extends HTMLElement {
       label.textContent = titleCase(n.name);
 
       el.append(icon, label);
-      if (n.status === "running" || isActive) {
+      // Beacon v2 omits `status` when running.
+      if ((n.status || "running") === "running" || isActive) {
         const dot = document.createElement("span");
         dot.className = "dot";
         dot.title = n.status || "running";
